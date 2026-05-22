@@ -208,16 +208,29 @@ class TestPaneAttachedDetection(unittest.TestCase):
         with patch("subprocess.run", side_effect=FileNotFoundError):
             self.assertFalse(self.bus.pane_is_attached("any-id"))
 
-    def test_peer_msg_silent_when_attached(self):
-        from unittest.mock import patch, MagicMock
-        # Simulate: short message, pane is attached → no tmux send at all
+    def test_peer_msg_silent_when_attached_and_drafting(self):
+        from unittest.mock import patch
+        # Attached AND user is drafting (input not empty) → silent
         with patch.object(self.bus, "pane_is_attached", return_value=True), \
+             patch.object(self.bus, "input_is_empty", return_value=False), \
              patch("subprocess.run") as run:
             ok, msg = self.bus.aoe_send_peer_msg("target-id", "alice", "t_xyz", "hi")
         self.assertTrue(ok)
         self.assertIn("silent", msg)
-        # No subprocess called at all — body lives in inbox.md, hook delivers
         run.assert_not_called()
+
+    def test_peer_msg_loud_when_attached_but_idle(self):
+        from unittest.mock import patch, MagicMock
+        # Attached but input is empty (user just watching) → FULL delivery so
+        # agent-to-agent autonomy keeps working
+        with patch.object(self.bus, "pane_is_attached", return_value=True), \
+             patch.object(self.bus, "input_is_empty", return_value=True), \
+             patch("subprocess.run",
+                   return_value=MagicMock(returncode=0, stdout="", stderr="")) as run:
+            ok, _ = self.bus.aoe_send_peer_msg("target-id", "alice", "t_xyz", "hi")
+        self.assertTrue(ok)
+        # subprocess.run WAS called (full delivery happened)
+        run.assert_called()
 
     def test_peer_msg_sends_full_when_unattached_and_small(self):
         from unittest.mock import patch, MagicMock

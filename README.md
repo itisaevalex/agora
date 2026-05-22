@@ -101,14 +101,28 @@ The message body, free-form. Can be multi-line.
 
 | Rail | Default | Override | What it stops |
 |---|---|---|---|
-| Outbound budget | 20 msgs/hour | `AGORA_BUDGET_PER_HOUR` | Quota runaway from chatty agents |
-| Loop detection | 10-min window, normalized hash | — | Same-point reworded resends |
-| Round cap | 20 rounds/thread | `AGORA_ROUND_CAP` | Endless ping-pong without consensus |
+| Outbound budget | 500 msgs/hour | `AGORA_BUDGET_PER_HOUR` | Quota runaway from chatty agents |
+| Loop detection | 2-hour window, normalized hash | — | Same-point reworded resends |
+| Round cap | 200 rounds/thread | `AGORA_ROUND_CAP` | Endless ping-pong without consensus |
 | Spawn budget | 10 children/parent/hour | `AGORA_SPAWN_BUDGET` | Runaway agent forking |
 | Kill switch | `AGORA=off` env OR `~/.agora/.paused` | — | Emergency halt |
 | Stranger refused | Always | — | `/agora-ask` requires linked target |
 | Self-link refused | Always | — | Can't link a session to itself |
 | Sticky notifications | `urgency=critical` | — | Missed alerts when away from desktop |
+| Don't-overwrite-draft | Auto | — | Detects when you're mid-typing; defers delivery to hook on next submit |
+
+**Delivery mode by receiver state:**
+
+```
+                              Attached (you're focused)
+                          ┌──────────────────────────────┐
+                          │                              │
+   unattached  ────────▶  │  idle (empty input)          │  ──▶ FULL dump
+                          │  drafting (text in input)    │  ──▶ SILENT (hook delivers on next submit)
+                          │                              │
+                          └──────────────────────────────┘
+   ─────────────────────▶ FULL dump (agent responds autonomously)
+```
 
 ## Install
 

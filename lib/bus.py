@@ -205,6 +205,24 @@ def aoe_send(target_aoe_id: str, text: str, dry_run: bool = False) -> tuple[bool
 TMUX_SAFE_SIZE_BYTES = 3000
 
 
+def _find_tmux_session_for(aoe_id: str) -> Optional[str]:
+    """Return the tmux session name for an aoe-id, or None if not found."""
+    try:
+        proc = subprocess.run(
+            ["tmux", "list-sessions", "-F", "#{session_name}"],
+            capture_output=True, text=True, timeout=3,
+        )
+        if proc.returncode != 0:
+            return None
+        prefix = aoe_id[:8]
+        for sess in proc.stdout.splitlines():
+            if sess.endswith(prefix) or f"_{prefix}" in sess:
+                return sess
+        return None
+    except (subprocess.TimeoutExpired, OSError, FileNotFoundError):
+        return None
+
+
 def pane_is_attached(aoe_id: str) -> bool:
     """Return True if a tmux client is currently attached to the target pane.
 
@@ -212,9 +230,6 @@ def pane_is_attached(aoe_id: str) -> bool:
     interacting with (which would appear mid-input as if magically inserted).
     """
     try:
-        # tmux list-clients with -F gives the session_name each client is on.
-        # aoe names sessions like aoe_<title>_<aoe-id-prefix>, so we grep for
-        # the aoe-id's first 8 chars as a suffix match.
         proc = subprocess.run(
             ["tmux", "list-clients", "-F", "#{session_name}"],
             capture_output=True, text=True, timeout=3,
@@ -226,6 +241,44 @@ def pane_is_attached(aoe_id: str) -> bool:
             if sess.endswith(prefix) or f"_{prefix}" in sess:
                 return True
         return False
+    except (subprocess.TimeoutExpired, OSError, FileNotFoundError):
+        return False
+
+
+def input_is_empty(aoe_id: str) -> bool:
+    """Return True if the target pane's input box appears to be empty.
+
+    Captures the last few lines of pane content; finds the prompt marker
+    line (lines starting with `❯`) and checks if there's any draft text
+    after it. If empty → user is idle (or claude is mid-thinking, no
+    input box rendered), safe to inject. If non-empty → user is drafting,
+    do not disturb.
+    """
+    try:
+        tmux_session = _find_tmux_session_for(aoe_id)
+        if not tmux_session:
+            return False
+        proc = subprocess.run(
+            ["tmux", "capture-pane", "-p", "-t", tmux_session, "-S", "-5"],
+            capture_output=True, text=True, timeout=3,
+        )
+        if proc.returncode != 0:
+            return False
+        # Strip ANSI escape codes
+        import re
+        clean = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", proc.stdout)
+        # Find the most recent ❯-prefixed line
+        for line in reversed(clean.splitlines()):
+            stripped = line.strip()
+            if stripped.startswith("❯"):
+                # Drop the ❯ and whitespace, see what's left
+                rest = stripped.lstrip("❯").strip()
+                # An empty input shows just `❯ ` (optionally with a cursor block)
+                # Common cursor glyphs in claude's TUI
+                return rest in ("", "█", "▓", "▁", "_")
+        # No ❯ line found in the last 5 lines — could mean claude is
+        # mid-thinking (no input rendered). Treat as idle.
+        return True
     except (subprocess.TimeoutExpired, OSError, FileNotFoundError):
         return False
 
@@ -249,20 +302,26 @@ def aoe_send_peer_msg(target_aoe_id: str, sender_label: str, thread: str,
        target pane immediately. Agent responds autonomously without needing
        a human to trigger the hook.
     """
+    attached = pane_is_attached(target_aoe_id)
+    drafting = attached and not input_is_empty(target_aoe_id)
+
     if dry_run:
-        # Predict which path would be chosen
-        if pane_is_attached(target_aoe_id):
-            return True, f"[DRY] SILENT — human attached to {target_aoe_id[:12]}, hook will deliver"
+        if drafting:
+            return True, f"[DRY] SILENT — user drafting in {target_aoe_id[:12]}, hook will deliver on next submit"
         if len(wire_text) >= TMUX_SAFE_SIZE_BYTES:
             return True, f"[DRY] NUDGE — large body ({len(wire_text)} bytes), tmux nudge + hook"
-        return True, f"[DRY] FULL — small body unattached, full peer-msg into pane"
+        if attached:
+            return True, f"[DRY] FULL (attached but input empty) — agent in {target_aoe_id[:12]} will respond"
+        return True, f"[DRY] FULL — unattached pane, full peer-msg into pane"
 
-    # SILENT path: do nothing via tmux. Body is already in inbox.md.
-    if pane_is_attached(target_aoe_id):
+    # SILENT path: only when user is actively drafting in the receiving pane.
+    # If attached but idle (just watching), fall through to FULL so agent-to-
+    # agent autonomy still works.
+    if drafting:
         audit("peer_msg.silent",
-              target=target_aoe_id, reason="human attached",
+              target=target_aoe_id, reason="user drafting",
               body_bytes=len(wire_text))
-        return True, "silent (human attached, body in inbox.md for hook delivery)"
+        return True, "silent (user drafting, body in inbox.md for hook delivery)"
 
     # NUDGE path: tiny notice, full body via hook
     if len(wire_text) >= TMUX_SAFE_SIZE_BYTES:
