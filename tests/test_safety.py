@@ -123,3 +123,118 @@ class TestSafety(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSafetyEnvOverrides(unittest.TestCase):
+    """Cover the AOE_BUS_ROUND_CAP / AOE_BUS_BUDGET_PER_HOUR env knobs."""
+
+    def setUp(self):
+        import tempfile, os, sys
+        from pathlib import Path
+        self.tmp = tempfile.mkdtemp()
+        os.environ["AOE_BUS_ROOT"] = self.tmp
+        for mod in list(sys.modules):
+            if mod.startswith("lib"):
+                del sys.modules[mod]
+        from lib import bus, safety, threads, peer_msg
+        self.bus = bus
+        self.safety = safety
+        self.threads = threads
+        self.pm = peer_msg
+        self.bus.BUS_ROOT = Path(self.tmp)
+        self.bus.ensure_bus_root()
+
+    def tearDown(self):
+        import os, shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        os.environ.pop("AOE_BUS_ROOT", None)
+        for k in ("AOE_BUS_ROUND_CAP", "AOE_BUS_BUDGET_PER_HOUR"):
+            os.environ.pop(k, None)
+
+    def _now(self):
+        from datetime import datetime, timezone
+        return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def _build_thread(self, thread_id, n_msgs):
+        self.threads.create_thread(thread_id, ["self", "peer"])
+        for i in range(n_msgs):
+            self.threads.append_msg(
+                thread_id,
+                self.pm.PeerMsg("a", thread_id,
+                                "ask" if i % 2 == 0 else "reply",
+                                f"msg {i}", self._now()),
+                "self" if i % 2 == 0 else "peer",
+            )
+
+    def test_round_cap_env_raises_limit(self):
+        import os
+        # Build a thread at DEFAULT_ROUND_CAP rounds — at the cap line.
+        # Bump budget via explicit kwarg so it doesn't trip first.
+        cap = self.safety.DEFAULT_ROUND_CAP
+        self._build_thread("t_x", cap * 2)  # exactly DEFAULT rounds
+        big_budget = cap * 10
+        ok_default, _ = self.safety.check_send("self", "peer", "reply", "next",
+                                               thread_id="t_x",
+                                               budget_per_hour=big_budget)
+        self.assertFalse(ok_default)  # at-cap blocks
+        # With env override raising to cap*2
+        os.environ["AOE_BUS_ROUND_CAP"] = str(cap * 2)
+        ok_env, _ = self.safety.check_send("self", "peer", "reply", "next",
+                                           thread_id="t_x",
+                                           budget_per_hour=big_budget)
+        self.assertTrue(ok_env)
+
+    def test_round_cap_env_lowers_limit(self):
+        import os
+        self._build_thread("t_y", 2)  # 1 round
+        ok_default, _ = self.safety.check_send("self", "peer", "reply", "next",
+                                               thread_id="t_y")
+        self.assertTrue(ok_default)
+        os.environ["AOE_BUS_ROUND_CAP"] = "1"
+        ok_strict, reason = self.safety.check_send("self", "peer", "reply", "next",
+                                                   thread_id="t_y")
+        self.assertFalse(ok_strict)
+        self.assertIn("1/1 rounds", reason)
+
+    def test_round_cap_env_invalid_falls_back(self):
+        import os
+        cap = self.safety.DEFAULT_ROUND_CAP
+        self._build_thread("t_z", cap * 2)
+        os.environ["AOE_BUS_ROUND_CAP"] = "not-a-number"
+        ok, _ = self.safety.check_send("self", "peer", "reply", "next",
+                                       thread_id="t_z",
+                                       budget_per_hour=cap * 10)
+        self.assertFalse(ok)  # garbage → fallback to default → at cap → block
+
+    def test_round_cap_env_zero_or_negative_falls_back(self):
+        import os
+        cap = self.safety.DEFAULT_ROUND_CAP
+        self._build_thread("t_w", cap * 2)
+        os.environ["AOE_BUS_ROUND_CAP"] = "-5"
+        ok, _ = self.safety.check_send("self", "peer", "reply", "next",
+                                       thread_id="t_w",
+                                       budget_per_hour=cap * 10)
+        self.assertFalse(ok)  # negative → fallback → still blocked at default
+
+    def test_budget_env_raises_limit(self):
+        import os
+        # Saturate 20 outbound (default budget). Use direct thread writes.
+        self.threads.create_thread("t_b", ["self", "peer"])
+        for i in range(20):
+            self.threads.append_msg("t_b",
+                self.pm.PeerMsg("a", "t_b", "ask", f"m{i}", self._now()), "self")
+        ok_default, _ = self.safety.check_send("self", "peer", "ask", "new")
+        self.assertFalse(ok_default)
+        os.environ["AOE_BUS_BUDGET_PER_HOUR"] = "50"
+        ok_env, _ = self.safety.check_send("self", "peer", "ask", "new2")
+        self.assertTrue(ok_env)
+
+    def test_explicit_argument_beats_env(self):
+        import os
+        self._build_thread("t_arg", 6)
+        os.environ["AOE_BUS_ROUND_CAP"] = "10"  # would allow
+        # Explicit argument (not default) should win
+        ok, reason = self.safety.check_send("self", "peer", "reply", "next",
+                                            thread_id="t_arg", round_cap=2)
+        self.assertFalse(ok)
+        self.assertIn("3/2 rounds", reason)
