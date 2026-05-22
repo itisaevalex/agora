@@ -70,37 +70,9 @@ echo ""
 echo "(I did NOT edit settings.json automatically — review and merge yourself.)"
 echo ""
 
-# ---- 4. Optional: systemd user unit for passive watchdog ----
-SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
-SYSTEMD_UNIT="$SYSTEMD_USER_DIR/agora-watchdog.service"
-if command -v systemctl >/dev/null 2>&1; then
-    mkdir -p "$SYSTEMD_USER_DIR"
-    sed "s|__AGORA_REPO_PLACEHOLDER__|$REPO|g" \
-        "$REPO/systemd/agora-watchdog.service" > "$SYSTEMD_UNIT"
-    echo "✓ installed: $SYSTEMD_UNIT"
-    echo ""
-    echo "─── ACTIVATE THE PASSIVE WATCHDOG ──────────────────────────────────"
-    echo "To enable auto-nudge for rate-limited stuck sessions (recommended):"
-    echo ""
-    echo "  # Make sure user systemd has access to DBus/DISPLAY for notify-send:"
-    echo "  systemctl --user import-environment DISPLAY DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR"
-    echo ""
-    echo "  # Enable + start:"
-    echo "  systemctl --user daemon-reload"
-    echo "  systemctl --user enable --now agora-watchdog"
-    echo ""
-    echo "  # Check status / tail logs:"
-    echo "  systemctl --user status agora-watchdog"
-    echo "  journalctl --user -u agora-watchdog -f"
-    echo ""
-    echo "  # Disable later:"
-    echo "  systemctl --user disable --now agora-watchdog"
-    echo ""
-else
-    echo "(systemctl not found — passive watchdog setup skipped; run manually: agora watchdog)"
-fi
+# (watchdog daemon lives in the sibling project 'lazarus')
 
-# ---- 5. Self-test ----
+# ---- 4. Self-test ----
 echo "─── SELF-TEST ──────────────────────────────────────────────────────"
 if [[ -z "${AOE_INSTANCE_ID:-}" ]]; then
     echo "⚠ not inside an aoe session (no AOE_INSTANCE_ID) — skipping live test."
