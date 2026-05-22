@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# aoe-bus wrapper. Installed at ~/.local/bin/aoe-bus by install.sh.
-# Locates the repo via AOE_BUS_REPO or falls back to the install-time path.
+# agora wrapper. Installed at ~/.local/bin/agora by install.sh.
+# Locates the repo via AGORA_REPO or falls back to the install-time path.
 set -e
 
-REPO="${AOE_BUS_REPO:-__AOE_BUS_REPO_PLACEHOLDER__}"
+REPO="${AGORA_REPO:-__AGORA_REPO_PLACEHOLDER__}"
 
 if [[ ! -f "$REPO/lib/cli.py" ]]; then
-    echo "aoe-bus: cli.py not found at $REPO/lib/cli.py" >&2
-    echo "aoe-bus: set AOE_BUS_REPO=/path/to/aoe-bus to override" >&2
+    echo "agora: cli.py not found at $REPO/lib/cli.py" >&2
+    echo "agora: set AGORA_REPO=/path/to/agora to override" >&2
     exit 2
 fi
 
