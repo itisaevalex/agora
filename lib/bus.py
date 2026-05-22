@@ -232,32 +232,49 @@ def pane_is_attached(aoe_id: str) -> bool:
 
 def aoe_send_peer_msg(target_aoe_id: str, sender_label: str, thread: str,
                       wire_text: str, dry_run: bool = False) -> tuple[bool, str]:
-    """Deliver a peer-msg, automatically nudging-only when delivering raw text
-    would create poor UX or hit a transport limit.
+    """Deliver a peer-msg via the right path for the receiver's state.
 
-    Two reasons to fall back to nudge-only:
-      1) target wire is large (> TMUX_SAFE_SIZE_BYTES, tmux drops bytes)
-      2) target pane has an attached client (user is watching it — typing
-         into their input box mid-conversation is jarring)
+    Three delivery modes:
 
-    In both cases, the full peer-msg is already in inbox.md; the receiver's
-    UserPromptSubmit hook delivers it with proper visual separator on their
-    next prompt-submit.
+    1. SILENT (user attached to target pane): no tmux send at all. Body sits
+       in inbox.md; the receiver's UserPromptSubmit hook injects it on the
+       next prompt the human types. Prevents the 'a message just appeared
+       in my input box from nowhere' surprise.
+
+    2. NUDGE (large body, > TMUX_SAFE_SIZE_BYTES, target unattached): send a
+       small notification via tmux so the agent wakes up, full body via hook
+       from inbox.md.
+
+    3. FULL (small body, target unattached): dump the full peer-msg into the
+       target pane immediately. Agent responds autonomously without needing
+       a human to trigger the hook.
     """
-    reason = None
+    if dry_run:
+        # Predict which path would be chosen
+        if pane_is_attached(target_aoe_id):
+            return True, f"[DRY] SILENT — human attached to {target_aoe_id[:12]}, hook will deliver"
+        if len(wire_text) >= TMUX_SAFE_SIZE_BYTES:
+            return True, f"[DRY] NUDGE — large body ({len(wire_text)} bytes), tmux nudge + hook"
+        return True, f"[DRY] FULL — small body unattached, full peer-msg into pane"
+
+    # SILENT path: do nothing via tmux. Body is already in inbox.md.
+    if pane_is_attached(target_aoe_id):
+        audit("peer_msg.silent",
+              target=target_aoe_id, reason="human attached",
+              body_bytes=len(wire_text))
+        return True, "silent (human attached, body in inbox.md for hook delivery)"
+
+    # NUDGE path: tiny notice, full body via hook
     if len(wire_text) >= TMUX_SAFE_SIZE_BYTES:
-        reason = f"large body ({len(wire_text)} bytes)"
-    elif pane_is_attached(target_aoe_id):
-        reason = "human focused on receiving pane"
+        nudge = (
+            f"📨 agora peer-msg from {sender_label} on thread {thread} "
+            f"({len(wire_text)} bytes) — your UserPromptSubmit hook will "
+            f"inject the full body from inbox.md on your next prompt."
+        )
+        audit("peer_msg.nudge",
+              target=target_aoe_id, reason="large body",
+              body_bytes=len(wire_text))
+        return aoe_send(target_aoe_id, nudge)
 
-    if reason is None:
-        return aoe_send(target_aoe_id, wire_text, dry_run=dry_run)
-
-    nudge = (
-        f"📨 agora peer-msg from {sender_label} on thread {thread} "
-        f"({reason}) — your UserPromptSubmit hook will inject the full body "
-        f"from inbox.md on your next prompt."
-    )
-    audit("peer_msg.nudge_only", target=target_aoe_id, reason=reason,
-          body_bytes=len(wire_text))
-    return aoe_send(target_aoe_id, nudge, dry_run=dry_run)
+    # FULL path: agent will see it as a pasted prompt and respond
+    return aoe_send(target_aoe_id, wire_text)

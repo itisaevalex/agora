@@ -208,19 +208,16 @@ class TestPaneAttachedDetection(unittest.TestCase):
         with patch("subprocess.run", side_effect=FileNotFoundError):
             self.assertFalse(self.bus.pane_is_attached("any-id"))
 
-    def test_peer_msg_falls_back_to_nudge_when_attached(self):
+    def test_peer_msg_silent_when_attached(self):
         from unittest.mock import patch, MagicMock
-        # Simulate: short message, but pane is attached
+        # Simulate: short message, pane is attached → no tmux send at all
         with patch.object(self.bus, "pane_is_attached", return_value=True), \
-             patch("subprocess.run",
-                   return_value=MagicMock(returncode=0, stdout="", stderr="")) as run:
-            ok, _ = self.bus.aoe_send_peer_msg("target-id", "alice", "t_xyz", "hi")
+             patch("subprocess.run") as run:
+            ok, msg = self.bus.aoe_send_peer_msg("target-id", "alice", "t_xyz", "hi")
         self.assertTrue(ok)
-        # The send-keys text should be the nudge form, not "hi"
-        sent_text = run.call_args[0][0][-1]  # last arg = the text
-        self.assertIn("📨 agora peer-msg", sent_text)
-        self.assertIn("human focused", sent_text)
-        self.assertNotIn("hi", sent_text.split("📨")[0])  # original body NOT delivered
+        self.assertIn("silent", msg)
+        # No subprocess called at all — body lives in inbox.md, hook delivers
+        run.assert_not_called()
 
     def test_peer_msg_sends_full_when_unattached_and_small(self):
         from unittest.mock import patch, MagicMock
