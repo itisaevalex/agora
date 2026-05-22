@@ -97,5 +97,56 @@ class TestEscalate(unittest.TestCase):
         self.assertIn("alice", audit_text)
 
 
+class TestNotificationExitCode(unittest.TestCase):
+    def setUp(self):
+        import tempfile, os, sys
+        from pathlib import Path
+        self.tmp = tempfile.mkdtemp()
+        os.environ["AOE_BUS_ROOT"] = self.tmp
+        for mod in list(sys.modules):
+            if mod.startswith("lib"):
+                del sys.modules[mod]
+        from lib import bus, escalate
+        self.bus = bus
+        self.esc = escalate
+        self.bus.BUS_ROOT = Path(self.tmp)
+        self.bus.ensure_bus_root()
+
+    def tearDown(self):
+        import os, shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        os.environ.pop("AOE_BUS_ROOT", None)
+
+    def test_returns_false_when_notify_send_exits_nonzero(self):
+        from unittest.mock import patch, MagicMock
+        with patch("shutil.which", return_value="/usr/bin/notify-send"), \
+             patch("subprocess.run") as run:
+            run.return_value = MagicMock(returncode=1, stderr="dbus broken")
+            self.assertFalse(self.esc.fire_desktop_notification("alice", "x"))
+            # Audit should record the failure
+            audit = self.bus.audit_log_path().read_text()
+            self.assertIn("notify.failed", audit)
+
+    def test_returns_true_when_notify_send_exits_zero(self):
+        from unittest.mock import patch, MagicMock
+        with patch("shutil.which", return_value="/usr/bin/notify-send"), \
+             patch("subprocess.run") as run:
+            run.return_value = MagicMock(returncode=0, stderr="")
+            self.assertTrue(self.esc.fire_desktop_notification("alice", "x"))
+            audit = self.bus.audit_log_path().read_text()
+            self.assertIn("notify.sent", audit)
+
+    def test_passes_critical_urgency_flag(self):
+        from unittest.mock import patch, MagicMock
+        with patch("shutil.which", return_value="/usr/bin/notify-send"), \
+             patch("subprocess.run") as run:
+            run.return_value = MagicMock(returncode=0, stderr="")
+            self.esc.fire_desktop_notification("alice", "x")
+            args = run.call_args[0][0]
+            # Should include -u critical
+            self.assertIn("critical", args)
+            self.assertIn("-u", args)
+
+
 if __name__ == "__main__":
     unittest.main()

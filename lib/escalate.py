@@ -43,16 +43,52 @@ def write(self_label: str, ref: str, reason: str, thread_id: Optional[str] = Non
 
 
 def fire_desktop_notification(self_label: str, reason: str) -> bool:
-    """Best-effort `notify-send`. Returns True if dispatched."""
-    if not shutil.which("notify-send"):
+    """Best-effort `notify-send`. Returns True only if notify-send exited 0.
+
+    Uses urgency=critical so the notification persists until manually dismissed
+    (urgency=normal auto-dismisses in ~5s and was easy to miss).
+
+    Emits a terminal bell (BEL char to /dev/tty) as a fallback signal if a
+    controlling tty is available — useful when the operator is looking at the
+    aoe TUI rather than the desktop notification corner.
+    """
+    bin_ = shutil.which("notify-send")
+    if not bin_:
+        bus.audit("notify.skipped", reason="notify-send not on PATH")
+        _terminal_bell()
         return False
+
     try:
-        subprocess.run(
-            ["notify-send", "-u", "normal", "-i", "dialog-information",
+        proc = subprocess.run(
+            [bin_, "-u", "critical", "-i", "dialog-warning",
+             "-a", "aoe-bus",
              f"aoe-bus: {self_label} escalating",
              reason[:300]],
             timeout=3, check=False,
+            capture_output=True, text=True,
         )
-        return True
-    except (subprocess.TimeoutExpired, OSError):
+    except (subprocess.TimeoutExpired, OSError) as e:
+        bus.audit("notify.failed", error=str(e))
+        _terminal_bell()
         return False
+
+    if proc.returncode != 0:
+        bus.audit("notify.failed",
+                  exit_code=proc.returncode,
+                  stderr=(proc.stderr or "").strip()[:200])
+        _terminal_bell()
+        return False
+
+    bus.audit("notify.sent", label=self_label)
+    _terminal_bell()
+    return True
+
+
+def _terminal_bell() -> None:
+    """Ring the terminal bell on the controlling tty (best-effort)."""
+    try:
+        with open("/dev/tty", "w") as f:
+            f.write("\a")
+            f.flush()
+    except OSError:
+        pass
