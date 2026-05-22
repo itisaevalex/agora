@@ -4,11 +4,24 @@ All checks live here so /bus-ask and /bus-reply share the same enforcement logic
 """
 from __future__ import annotations
 
+import os
+
 from . import bus, threads
 
 DEFAULT_BUDGET_PER_HOUR = 20
-DEFAULT_ROUND_CAP = 3
+DEFAULT_ROUND_CAP = 20
 DEFAULT_DUP_WINDOW_SECS = 600  # 10 minutes
+
+
+def _env_int(name: str, fallback: int) -> int:
+    raw = os.environ.get(name)
+    if not raw:
+        return fallback
+    try:
+        n = int(raw)
+        return n if n > 0 else fallback
+    except ValueError:
+        return fallback
 
 
 def check_send(
@@ -24,7 +37,15 @@ def check_send(
     """Run all safety checks. Returns (allowed, reason_if_blocked).
 
     Order matters: cheapest checks first, escalation-implying checks last.
+
+    Env overrides (applied when callers pass the module defaults):
+      AOE_BUS_ROUND_CAP      — int, raises/lowers the per-thread reply cap
+      AOE_BUS_BUDGET_PER_HOUR — int, raises/lowers the hourly outbound budget
     """
+    if budget_per_hour == DEFAULT_BUDGET_PER_HOUR:
+        budget_per_hour = _env_int("AOE_BUS_BUDGET_PER_HOUR", DEFAULT_BUDGET_PER_HOUR)
+    if round_cap == DEFAULT_ROUND_CAP:
+        round_cap = _env_int("AOE_BUS_ROUND_CAP", DEFAULT_ROUND_CAP)
     # 1) Hourly outbound budget — cheapest, scans only recent jsonl entries
     recent = threads.recent_outbound_for(self_aoe_id, since_secs=3600)
     if len(recent) >= budget_per_hour:

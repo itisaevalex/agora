@@ -23,7 +23,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from lib import bus, escalate, inbox, links, peer_msg, safety, threads  # noqa: E402
+from lib import bus, escalate, inbox, links, peer_msg, safety, status, threads  # noqa: E402
 
 
 def _require_self() -> bus.SessionIdentity:
@@ -295,6 +295,36 @@ def cmd_hook_inject(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_status(args: argparse.Namespace) -> int:
+    """Print a roll-up of bus state across all sessions.
+
+    With --watch, re-prints every N seconds (default 2) using ANSI clear.
+    """
+    interval = args.watch
+    compact = args.compact
+
+    if interval <= 0:
+        rows = status.collect()
+        print(status.render(rows, compact=compact), end="")
+        return 0
+
+    # Watch mode — clear+repaint loop until Ctrl+C
+    import time
+    try:
+        while True:
+            rows = status.collect()
+            # ANSI clear screen + cursor home
+            print("\033[2J\033[H", end="")
+            from datetime import datetime
+            print(f"aoe-bus status · {datetime.now().strftime('%H:%M:%S')} · refresh {interval}s · Ctrl+C to exit")
+            print()
+            print(status.render(rows, compact=compact), end="")
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print()  # graceful newline
+        return 0
+
+
 def cmd_pause(args: argparse.Namespace) -> int:
     bus.pause_bus()
     print("✓ bus paused — no outbound messages until /bus-resume")
@@ -343,6 +373,14 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("bus-pause").set_defaults(func=cmd_pause)
     sub.add_parser("bus-resume").set_defaults(func=cmd_resume)
     sub.add_parser("hook-inject").set_defaults(func=cmd_hook_inject)
+
+    p_status = sub.add_parser("status",
+                              help="roll-up of bus activity across all sessions")
+    p_status.add_argument("--watch", type=int, default=0, metavar="SECS",
+                          help="repaint every N seconds (default 0 = one-shot)")
+    p_status.add_argument("--compact", action="store_true",
+                          help="one-line-per-session, no detail block")
+    p_status.set_defaults(func=cmd_status)
 
     return p
 
