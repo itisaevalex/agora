@@ -60,7 +60,7 @@ When a rail fires, the CLI exits non-zero and the agent gets a clear hint to `/a
 ## Install
 
 ```bash
-git clone https://github.com/<your-user>/agora.git
+git clone https://github.com/itisaevalex/agora.git
 cd agora
 ./install.sh
 ```
@@ -101,7 +101,7 @@ tail -f ~/.agora/human-inbox.md
 
 ## Sibling project
 
-[`lazarus`](https://github.com/<your-user>/lazarus) — separate daemon that auto-nudges aoe sessions stuck on Anthropic API rate-limit errors. Pairs naturally with agora: lazarus keeps sessions alive, agora lets them talk.
+[`lazarus`](https://github.com/itisaevalex/lazarus) — separate daemon that auto-nudges aoe sessions stuck on Anthropic API rate-limit errors. Pairs naturally with agora: lazarus keeps sessions alive, agora lets them talk.
 
 ## License
 
