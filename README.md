@@ -27,6 +27,23 @@ After registering the hook, restart Claude Code (or open a fresh session) and yo
 | `/bus-ask <peer> <msg>` | Open a thread, send peer-msg |
 | `/bus-reply <thread> <msg>` | Continue a thread |
 | `/bus-escalate <ref> <why>` | Pull human in, surface to human-inbox.md |
+| `/bus-status` | Roll-up of bus state across all sessions (● marks attention) |
+| `/bus-watchdog` | Foreground watchdog loop (auto-nudges rate-limited sessions) |
+
+## Passive watchdog (recommended)
+
+For "set and forget" auto-recovery from API rate-limit cascades:
+
+```bash
+systemctl --user import-environment DISPLAY DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR
+systemctl --user daemon-reload
+systemctl --user enable --now aoe-bus-watchdog
+```
+
+Polls every 30s; nudges any session showing rate-limit/overloaded patterns
+after a 60s cooldown. Survives reboot, restarts on failure. Logs via
+`journalctl --user -u aoe-bus-watchdog -f`. Disable with
+`systemctl --user disable --now aoe-bus-watchdog`.
 
 ## Architecture in three primitives
 
@@ -50,12 +67,14 @@ The message body, free-form. Can be multi-line.
 
 | Rail | Default | What it stops |
 |---|---|---|
-| **Outbound budget** | 20 msgs/hour per session | Quota runaway from chatty agents |
+| **Outbound budget** | 20 msgs/hour per session (`AOE_BUS_BUDGET_PER_HOUR` to override) | Quota runaway from chatty agents |
 | **Loop detection** | 10-min window, normalized hash | Same-point reworded resends |
-| **Round cap** | 3 rounds/thread | Endless ping-pong without consensus |
+| **Round cap** | 20 rounds/thread (`AOE_BUS_ROUND_CAP` to override) | Endless ping-pong without consensus |
 | **Kill switch** | `AOE_BUS=off` env OR `~/.aoe-bus/.paused` | Emergency halt |
 | **Self-link refused** | Always | You can't link a session to itself |
 | **Stranger refused** | Always | `/bus-ask` requires the target be a current `/bus-link` |
+| **Stuck-session watchdog** | systemd user unit (opt-in) | Anthropic rate-limit cascades — auto-nudges with "continue" |
+| **Sticky notifications** | urgency=critical | Lost notifications when operator was looking elsewhere |
 
 When a safety check fires, the CLI exits 3 and tells the agent (and you) which rail and why. Loop-detect and round-cap hints explicitly suggest `/bus-escalate`.
 
