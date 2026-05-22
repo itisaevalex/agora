@@ -1,5 +1,9 @@
 # agora
 
+[![test](https://github.com/itisaevalex/agora/actions/workflows/test.yml/badge.svg)](https://github.com/itisaevalex/agora/actions/workflows/test.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![python: 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
+
 ```
                        _
    __ _  __ _  ___  ___| |_ 
