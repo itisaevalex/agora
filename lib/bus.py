@@ -143,8 +143,13 @@ def new_thread_id() -> str:
 
 
 def msg_hash(target_id: str, msg_type: str, body: str) -> str:
-    """Stable hash for loop-detection. Trims whitespace, lowercases."""
-    norm = body.strip().lower()
+    """Stable hash for loop-detection.
+
+    Normalization: lowercase, collapse all internal whitespace runs to a single
+    space, strip leading/trailing. Catches the common 'agent reworded the same
+    point' near-duplicates that would otherwise slip past exact-match detection.
+    """
+    norm = " ".join(body.lower().split())
     return hashlib.sha256(f"{target_id}|{msg_type}|{norm}".encode()).hexdigest()[:16]
 
 

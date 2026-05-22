@@ -23,7 +23,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from lib import bus, escalate, inbox, links, peer_msg, threads  # noqa: E402
+from lib import bus, escalate, inbox, links, peer_msg, safety, threads  # noqa: E402
 
 
 def _require_self() -> bus.SessionIdentity:
@@ -115,6 +115,15 @@ def cmd_ask(args: argparse.Namespace) -> int:
         at=bus.now_iso(),
     )
 
+    # Safety rails — budget + loop detection (round cap doesn't apply to a new ask).
+    # Run BEFORE the dry-run short-circuit so previews show blocks.
+    allowed, reason = safety.check_send(
+        me.aoe_id, peer["aoe_id"], "ask", body, thread_id=None,
+    )
+    if not allowed:
+        print(f"BLOCKED: {reason}", file=sys.stderr)
+        return 3
+
     if args.dry:
         print(f"[DRY] would create thread {thread_id} and send to {peer['label']}:")
         print(msg.to_wire())
@@ -181,6 +190,14 @@ def cmd_reply(args: argparse.Namespace) -> int:
         body=body,
         at=bus.now_iso(),
     )
+
+    # Safety rails — budget + loop + round cap. Before dry-short-circuit.
+    allowed, reason = safety.check_send(
+        me.aoe_id, other_id, "reply", body, thread_id=args.thread,
+    )
+    if not allowed:
+        print(f"BLOCKED: {reason}", file=sys.stderr)
+        return 3
 
     if args.dry:
         print(f"[DRY] would send reply on thread {args.thread} to {other_label}:")
