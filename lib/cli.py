@@ -25,7 +25,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from lib import bus, escalate, inbox, links, peer_msg, safety, status, threads  # noqa: E402
+from lib import bus, escalate, inbox, lineage, links, peer_msg, safety, spawn, status, threads  # noqa: E402
 
 
 
@@ -261,6 +261,54 @@ def cmd_escalate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_spawn(args: argparse.Namespace) -> int:
+    me = _require_self()
+    title = args.title
+    task = " ".join(args.task).strip()
+    if not task:
+        print("error: empty initial task", file=sys.stderr)
+        return 2
+
+    ok, msg, child_id = spawn.spawn(me, title, task, dry_run=args.dry)
+    icon = "✓" if ok else "✗"
+    print(f"{icon} {msg}")
+    if ok and child_id and not args.dry:
+        print(f"  ask it:   /agora-ask {title} <your question>")
+        print(f"  see tree: /agora-tree")
+    return 0 if ok else 1
+
+
+def cmd_tree(args: argparse.Namespace) -> int:
+    me = _require_self()
+    # Build a sessions_lookup so titles match what aoe currently shows
+    sessions_lookup = {s.aoe_id: s.label for s in bus.list_sessions()}
+    sessions_lookup.setdefault(me.aoe_id, me.label)
+
+    # Show ancestors above + descendants below me
+    anc = lineage.ancestors(me.aoe_id)
+    if anc:
+        print("ancestors (oldest first):")
+        for a in reversed(anc):
+            label = sessions_lookup.get(a, lineage.load().get(a, {}).get("title", a[:12]))
+            print(f"  ↑ {label}  [{a[:12]}]")
+        print()
+    print("you + descendants:")
+    print(lineage.render_tree(me.aoe_id, sessions_lookup=sessions_lookup), end="")
+
+    # Also show direct linked peers that aren't lineage-related
+    my_links = links.load(me.aoe_id)
+    descs = set(lineage.descendants(me.aoe_id))
+    ancs = set(anc)
+    other_peers = [L for L in my_links
+                   if L["aoe_id"] not in descs
+                   and L["aoe_id"] not in ancs]
+    if other_peers:
+        print("\nother peers (linked but not lineage):")
+        for L in other_peers:
+            print(f"  ↔ {L['label']}  [{L['aoe_id'][:12]}]")
+    return 0
+
+
 def cmd_hook_inject(args: argparse.Namespace) -> int:
     """Called by the UserPromptSubmit hook. Atomically reads+clears self inbox.
 
@@ -376,6 +424,15 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("pause").set_defaults(func=cmd_pause)
     sub.add_parser("resume").set_defaults(func=cmd_resume)
     sub.add_parser("hook-inject").set_defaults(func=cmd_hook_inject)
+
+    p_spawn = sub.add_parser("spawn", help="create a child aoe session with a starting task")
+    p_spawn.add_argument("title", help="title for the new session (alphanumerics + dash/dot/underscore/space)")
+    p_spawn.add_argument("task", nargs="+", help="initial task to drop into the child as its first prompt")
+    p_spawn.add_argument("--dry", action="store_true")
+    p_spawn.set_defaults(func=cmd_spawn)
+
+    p_tree = sub.add_parser("tree", help="show ancestor lineage + descendant tree from this session")
+    p_tree.set_defaults(func=cmd_tree)
 
     p_status = sub.add_parser("status",
                               help="roll-up of bus activity across all sessions")

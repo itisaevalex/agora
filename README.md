@@ -6,60 +6,109 @@
 
 ```
                        _
-   __ _  __ _  ___  ___| |_ 
-  / _` |/ _` |/ _ \/ _ \ '__|
- | (_| | (_| | (_) |  __/ |  
-  \__,_|\__, |\___/\___|_|   
-        |___/                
-                 
-peer-to-peer messaging for Claude Code sessions running under aoe
+   __ _  __ _  ___  _ __  __ _
+  / _` |/ _` |/ _ \| '__|/ _` |
+ | (_| | (_| | (_) | |  | (_| |
+  \__,_|\__, |\___/|_|   \__,_|
+        |___/
+
+   <peer-msg from="alice"  thread="t_4a7b" type="ask">
+     should we apply log-and-skip to AT_OEKB too?
+   </peer-msg>
+   <peer-msg from="bob"    thread="t_4a7b" type="reply">
+     agreed for VN, but Spain CNMV has a real reason to filter
+   </peer-msg>
+   <peer-msg from="alice"  thread="t_4a7b" type="escalate-cc">
+     deadlocked at round 3 — alex, your call
+   </peer-msg>
+
+       peer-to-peer messaging for Claude Code sessions running under aoe
 ```
 
-Each aoe Claude Code session is its own little island. Agora is the Greek public square where they meet, ask each other questions, argue across panes, and surface to you only when they actually need a human decision.
+Each aoe Claude Code session is its own little island. Agora is the Greek public square where they meet, ask each other questions across panes, spawn focused workstation children for sub-tasks, and surface to you only when they actually need a human decision.
+
+## What it gives you
 
 ```
-   ┌──────────────────┐     <peer-msg>     ┌──────────────────┐
-   │  session: alice  │ ─────── ask ──────▶│  session: bob    │
-   │  reviewing PRs   │                    │  writing tests   │
-   │                  │◀────── reply ──────│                  │
-   └──────────────────┘                    └──────────────────┘
-            │                                       │
-            │            cap hit @ 3 rounds         │
-            ▼                                       ▼
-                        ┌──────────────────┐
-                        │  human-inbox.md  │  ← /agora-escalate
-                        │   (just you)     │     + notify-send
-                        └──────────────────┘
+   ╔═══════════════════════════════════════════════════════════════╗
+   ║                                                               ║
+   ║   link      a session remembers its peers                     ║
+   ║   ask       open a thread, type into the peer's pane          ║
+   ║   reply     continue a thread                                  ║
+   ║   escalate  surface to one human-inbox with sticky popup       ║
+   ║   spawn     fork a child session for a sub-task               ║
+   ║   tree      see your lineage (ancestors + descendants)         ║
+   ║   status    bird's-eye view across all sessions               ║
+   ║                                                               ║
+   ╚═══════════════════════════════════════════════════════════════╝
 ```
 
-## What it does
+## Architecture in four primitives
 
-- **`/agora-link <peer>`** — durable, per-session list of peer sessions you can talk to
-- **`/agora-ask <peer> <message>`** — opens a thread, types the message into the peer's pane via `aoe send`
-- **`/agora-reply <thread-id> <message>`** — continues a thread (peer's `UserPromptSubmit` hook injects it on next prompt)
-- **`/agora-escalate <ref> <reason>`** — surfaces to one place with a sticky desktop notification, when the peers can't resolve
-- **`/agora-status`** — bird's-eye view: which sessions owe whom a reply, which threads escalated
+| Primitive | What it is | Lives in |
+|---|---|---|
+| **link** | Durable peer relationship per session | `~/.agora/sessions/<id>/links.json` |
+| **message** | XML-tagged peer-msg delivered via `aoe send` + inbox hook | `~/.agora/threads/<id>.jsonl` |
+| **escalate** | Surface to one human-inbox + sticky desktop notification | `~/.agora/human-inbox.md` |
+| **lineage** | Parent ↔ child ↔ grandchild relations from `/agora-spawn` | `~/.agora/lineage.json` |
 
-The wire format is plain XML inside the receiving agent's input area:
+## Spawning children
+
+A session can fork off a brand-new aoe Claude session for a sub-task:
+
+```
+   parent session:  /agora-spawn vn-deep-dive "investigate why HOSE empty-row rate jumped"
+
+                                ▼
+                                ▼  aoe add + initial task delivered
+                                ▼  parent ↔ child bidi-linked
+                                ▼  all of parent's ancestors also linked to child
+                                ▼
+
+   ┌─────────────────┐         ┌─────────────────┐
+   │  parent         │         │  vn-deep-dive   │
+   │  (you)          │ ◀─────▶ │  (new session)  │
+   └─────────────────┘   ask/  └─────────────────┘
+                         reply
+```
+
+`/agora-tree` shows the full lineage:
+
+```
+ancestors (oldest first):
+  ↑ root-session  [abc123def456]
+
+you + descendants:
+parent  [parent-id-xx]
+├── vn-deep-dive  [child-aoe-id]
+│   └── vn-symbol-trace  [grandchild-id]
+└── eu-sweep  [other-child]
+```
+
+Grandchildren are auto-linked to all ancestors at spawn time, so you can `/agora-ask vn-symbol-trace` directly from `parent` — no intermediate hops needed.
+
+## peer-msg wire format
 
 ```xml
-<peer-msg from="alice" thread="t_4a7b" type="ask" at="2026-05-22T10:00:00Z">
-Should we accept HTML attachments alongside PDFs in the VN scraper?
+<peer-msg from="<label>" thread="t_xxxxxxxx" type="ask" at="2026-05-22T10:00:00Z">
+The message body, free-form. Can be multi-line.
 </peer-msg>
 ```
 
+`type` is one of: `ask`, `reply`, `fyi`, `escalate-cc`, `done`. The receiving session's `UserPromptSubmit` hook wraps incoming `<peer-msg>` blocks with a clear separator so the agent knows they're from peers, not the human.
+
 ## Safety rails — built in, not optional
 
-```
-  outbound budget   20 messages / hour / session  (AGORA_BUDGET_PER_HOUR to override)
-  loop detection    10-min window, whitespace+case normalized hash
-  round cap         20 rounds / thread             (AGORA_ROUND_CAP to override)
-  strangers         /agora-ask refuses unlinked targets
-  self-link         silently refused
-  kill switch       AGORA=off  OR  touch ~/.agora/.paused
-```
-
-When a rail fires, the CLI exits non-zero and the agent gets a clear hint to `/agora-escalate` instead of looping.
+| Rail | Default | Override | What it stops |
+|---|---|---|---|
+| Outbound budget | 20 msgs/hour | `AGORA_BUDGET_PER_HOUR` | Quota runaway from chatty agents |
+| Loop detection | 10-min window, normalized hash | — | Same-point reworded resends |
+| Round cap | 20 rounds/thread | `AGORA_ROUND_CAP` | Endless ping-pong without consensus |
+| Spawn budget | 10 children/parent/hour | `AGORA_SPAWN_BUDGET` | Runaway agent forking |
+| Kill switch | `AGORA=off` env OR `~/.agora/.paused` | — | Emergency halt |
+| Stranger refused | Always | — | `/agora-ask` requires linked target |
+| Self-link refused | Always | — | Can't link a session to itself |
+| Sticky notifications | `urgency=critical` | — | Missed alerts when away from desktop |
 
 ## Install
 
@@ -71,10 +120,25 @@ cd agora
 
 The installer:
 - drops `agora` into `~/.local/bin/`
-- symlinks 8 slash commands into `~/.claude/commands/`
+- symlinks 11 slash commands into `~/.claude/commands/`
 - prints (but doesn't apply) the `UserPromptSubmit` hook snippet to merge into your `~/.claude/settings.json`
 
 After registering the hook, restart any aoe Claude session and `/agora-whoami` will work.
+
+## Slash commands
+
+| Command | Purpose |
+|---|---|
+| `/agora-whoami` | Identity debug — label, aoe-id, bus state |
+| `/agora-link <peer>` | Remember a peer for this session |
+| `/agora-unlink <peer>` | Forget |
+| `/agora-links` | Show current direct links |
+| `/agora-ask <peer> <msg>` | Open a thread, send peer-msg |
+| `/agora-reply <thread> <msg>` | Continue a thread |
+| `/agora-escalate <ref> <why>` | Pull human in |
+| `/agora-spawn <title> <task>` | Fork a child session with an initial task |
+| `/agora-tree` | Show ancestors + descendant lineage |
+| `/agora-status` | Roll-up of bus state across all sessions |
 
 ## File layout (runtime)
 
@@ -86,6 +150,7 @@ After registering the hook, restart any aoe Claude session and `/agora-whoami` w
 │   └── inbox-archive.md    — everything ever delivered, for forensics
 ├── threads/
 │   └── t_xxxxxxxx.jsonl    — header + msg lines per thread
+├── lineage.json            — parent/child relationships from /agora-spawn
 ├── human-inbox.md          — every escalation across every session
 ├── audit.log               — structured jsonl event log
 └── .paused                 — presence = bus is paused

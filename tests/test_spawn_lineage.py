@@ -1,0 +1,210 @@
+"""Tests for spawn + lineage."""
+import json
+import os
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch, MagicMock
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+
+class TestLineageStore(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        os.environ["AGORA_ROOT"] = self.tmp
+        for mod in list(sys.modules):
+            if mod.startswith("lib"):
+                del sys.modules[mod]
+        from lib import bus, lineage
+        self.bus = bus
+        self.lineage = lineage
+        self.bus.BUS_ROOT = Path(self.tmp)
+        self.bus.ensure_bus_root()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        os.environ.pop("AGORA_ROOT", None)
+
+    def test_empty_lineage(self):
+        self.assertEqual(self.lineage.load(), {})
+
+    def test_register_root(self):
+        self.lineage.register("a", "Alice", parent_id=None, task="hello")
+        data = self.lineage.load()
+        self.assertEqual(data["a"]["title"], "Alice")
+        self.assertIsNone(data["a"]["parent"])
+
+    def test_register_child(self):
+        self.lineage.register("a", "Alice")
+        self.lineage.register("b", "Bob", parent_id="a")
+        self.assertEqual(self.lineage.load()["b"]["parent"], "a")
+
+    def test_ancestors(self):
+        # a -> b -> c -> d
+        self.lineage.register("a", "A")
+        self.lineage.register("b", "B", parent_id="a")
+        self.lineage.register("c", "C", parent_id="b")
+        self.lineage.register("d", "D", parent_id="c")
+        self.assertEqual(self.lineage.ancestors("d"), ["c", "b", "a"])
+        self.assertEqual(self.lineage.ancestors("a"), [])
+
+    def test_children_direct_only(self):
+        # a -> b, a -> c, b -> d
+        self.lineage.register("a", "A")
+        self.lineage.register("b", "B", parent_id="a")
+        self.lineage.register("c", "C", parent_id="a")
+        self.lineage.register("d", "D", parent_id="b")
+        self.assertEqual(sorted(self.lineage.children("a")), ["b", "c"])
+        self.assertEqual(self.lineage.children("b"), ["d"])
+        self.assertEqual(self.lineage.children("c"), [])
+
+    def test_descendants_transitive(self):
+        # a -> b -> c, a -> d
+        self.lineage.register("a", "A")
+        self.lineage.register("b", "B", parent_id="a")
+        self.lineage.register("c", "C", parent_id="b")
+        self.lineage.register("d", "D", parent_id="a")
+        descs = sorted(self.lineage.descendants("a"))
+        self.assertEqual(descs, ["b", "c", "d"])
+        self.assertEqual(self.lineage.descendants("c"), [])
+
+    def test_ancestors_doesnt_infinite_loop(self):
+        # Defensive: corrupted lineage with a cycle
+        self.lineage.register("a", "A", parent_id="b")
+        self.lineage.register("b", "B", parent_id="a")
+        # Should not hang
+        result = self.lineage.ancestors("a")
+        self.assertIn("b", result)
+        self.assertLessEqual(len(result), 2)
+
+    def test_count_recent_children(self):
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.lineage.register("a", "A")
+        # Two recent children
+        self.lineage.register("b", "B", parent_id="a")
+        self.lineage.register("c", "C", parent_id="a")
+        # One ancient child (back-date manually)
+        data = self.lineage.load()
+        self.lineage.register("d", "D", parent_id="a")
+        data = self.lineage.load()
+        data["d"]["spawned_at"] = "2020-01-01T00:00:00Z"
+        self.lineage.save(data)
+        self.assertEqual(self.lineage.count_recent_children("a", since_secs=3600), 2)
+
+    def test_render_tree_basic(self):
+        # a -> b -> c, a -> d
+        self.lineage.register("a", "Alice")
+        self.lineage.register("b", "Bob", parent_id="a")
+        self.lineage.register("c", "Carol", parent_id="b")
+        self.lineage.register("d", "Dave", parent_id="a")
+        rendered = self.lineage.render_tree("a")
+        self.assertIn("Alice", rendered)
+        self.assertIn("Bob", rendered)
+        self.assertIn("Carol", rendered)
+        self.assertIn("Dave", rendered)
+        # Bob should appear before Carol (parent before child)
+        self.assertLess(rendered.index("Bob"), rendered.index("Carol"))
+
+    def test_render_tree_empty_for_leaf_with_no_kids(self):
+        self.lineage.register("a", "Alice")
+        rendered = self.lineage.render_tree("a")
+        self.assertIn("Alice", rendered)
+
+
+class TestSpawn(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        os.environ["AGORA_ROOT"] = self.tmp
+        for mod in list(sys.modules):
+            if mod.startswith("lib"):
+                del sys.modules[mod]
+        from lib import bus, lineage, spawn, links
+        self.bus = bus
+        self.lineage = lineage
+        self.spawn = spawn
+        self.links = links
+        self.bus.BUS_ROOT = Path(self.tmp)
+        self.bus.ensure_bus_root()
+        self.parent = self.bus.SessionIdentity(aoe_id="parent-id", label="Parent")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        os.environ.pop("AGORA_ROOT", None)
+        os.environ.pop("AGORA_SPAWN_BUDGET", None)
+
+    def test_dry_run_does_not_call_aoe(self):
+        with patch("subprocess.run") as run:
+            ok, msg, cid = self.spawn.spawn(self.parent, "child1", "do the thing", dry_run=True)
+        self.assertTrue(ok)
+        self.assertIsNone(cid)
+        run.assert_not_called()
+
+    def test_invalid_title_rejected(self):
+        ok, msg, _ = self.spawn.spawn(self.parent, "child;rm -rf /", "task")
+        self.assertFalse(ok)
+        self.assertIn("invalid title", msg)
+
+    def test_spawn_creates_lineage_and_links(self):
+        # Mock aoe add to return a fake aoe-id
+        fake_out = "✓ Added session: child1\n  ID:      abcdef123456\n"
+        fake_run = MagicMock(returncode=0, stdout=fake_out, stderr="")
+        with patch("subprocess.run", return_value=fake_run), \
+             patch("time.sleep"):
+            ok, msg, cid = self.spawn.spawn(self.parent, "child1", "go forth")
+        self.assertTrue(ok)
+        self.assertEqual(cid, "abcdef123456")
+        # Lineage recorded
+        data = self.lineage.load()
+        self.assertEqual(data["abcdef123456"]["parent"], "parent-id")
+        # Bidirectional link
+        parent_links = [L["aoe_id"] for L in self.links.load("parent-id")]
+        child_links = [L["aoe_id"] for L in self.links.load("abcdef123456")]
+        self.assertIn("abcdef123456", parent_links)
+        self.assertIn("parent-id", child_links)
+
+    def test_spawn_links_grandparent_to_grandchild(self):
+        # Set up: GP -> Parent
+        self.lineage.register("gp-id", "GrandParent", parent_id=None)
+        self.lineage.register(self.parent.aoe_id, self.parent.label, parent_id="gp-id")
+
+        fake_out = "  ID:      abc123def456\n"
+        with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout=fake_out, stderr="")), \
+             patch("time.sleep"):
+            ok, _, cid = self.spawn.spawn(self.parent, "GrandChild", "task")
+        self.assertTrue(ok)
+        # GP should now have a link to GrandChild
+        gp_links = [L["aoe_id"] for L in self.links.load("gp-id")]
+        self.assertIn(cid, gp_links)
+        # GrandChild should have a link back to GP
+        gc_links = [L["aoe_id"] for L in self.links.load(cid)]
+        self.assertIn("gp-id", gc_links)
+
+    def test_budget_blocks_spawn_after_threshold(self):
+        os.environ["AGORA_SPAWN_BUDGET"] = "2"
+        # Pre-populate 2 recent children
+        self.lineage.register("c1", "C1", parent_id="parent-id")
+        self.lineage.register("c2", "C2", parent_id="parent-id")
+        ok, msg, _ = self.spawn.spawn(self.parent, "third", "task", dry_run=True)
+        self.assertFalse(ok)
+        self.assertIn("budget exhausted", msg)
+
+    def test_aoe_add_failure_returns_false(self):
+        with patch("subprocess.run", return_value=MagicMock(returncode=1, stdout="", stderr="bad")):
+            ok, msg, _ = self.spawn.spawn(self.parent, "child1", "task")
+        self.assertFalse(ok)
+
+    def test_no_id_in_output_returns_false(self):
+        with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="weird no id here", stderr="")):
+            ok, msg, _ = self.spawn.spawn(self.parent, "child1", "task")
+        self.assertFalse(ok)
+        self.assertIn("parse aoe-id", msg)
+
+
+if __name__ == "__main__":
+    unittest.main()
