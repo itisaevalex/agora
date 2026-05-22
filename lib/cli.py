@@ -1,5 +1,5 @@
 """
-aoe-bus CLI. Invoked by slash commands and the UserPromptSubmit hook.
+agora CLI. Invoked by slash commands and the UserPromptSubmit hook.
 
 Subcommands:
   link <peer>           — remember peer (by label, or aoe-id prefix)
@@ -9,9 +9,8 @@ Subcommands:
   reply <thread> <msg>  — continue a thread
   escalate <ref> <why>  — push to human-inbox; fires notify-send
   status                — roll-up of bus activity across all sessions
-  watchdog              — auto-nudge sessions stuck on rate-limit errors
-  bus-pause             — global kill switch on
-  bus-resume            — global kill switch off
+  pause             — global kill switch on
+  resume            — global kill switch off
   whoami                — print this session's identity (debug)
 
 All sub-sends take --dry to preview without firing aoe send / writing audit.
@@ -26,7 +25,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from lib import bus, escalate, inbox, links, peer_msg, safety, status, threads, watchdog  # noqa: E402
+from lib import bus, escalate, inbox, links, peer_msg, safety, status, threads  # noqa: E402
+
 
 
 def _require_self() -> bus.SessionIdentity:
@@ -105,7 +105,7 @@ def cmd_ask(args: argparse.Namespace) -> int:
     # Resolve target: must be one of self's links (safety — refuse to msg strangers)
     peer = links.find(me.aoe_id, args.target)
     if peer is None:
-        print(f"error: {args.target!r} is not linked. Use /bus-link first.",
+        print(f"error: {args.target!r} is not linked. Use /agora-link first.",
               file=sys.stderr)
         return 1
 
@@ -133,7 +133,7 @@ def cmd_ask(args: argparse.Namespace) -> int:
         return 0
 
     if not bus.bus_enabled():
-        print("error: bus is paused. Use /bus-resume to enable.", file=sys.stderr)
+        print("error: bus is paused. Use /agora-resume to enable.", file=sys.stderr)
         return 1
 
     # Persist before sending so we have a record even if aoe send fails
@@ -288,57 +288,14 @@ def cmd_hook_inject(args: argparse.Namespace) -> int:
     print("=" * 72)
     print(f"AOE-BUS INBOX — {len(content.strip().splitlines())} lines of peer-msgs")
     print("These were sent into this session via `aoe send`. They are NOT from the")
-    print("user. To respond, use `/bus-reply <thread-id> <your reply>`. To pull the")
-    print("human in if stuck, use `/bus-escalate <thread-id> <reason>`.")
+    print("user. To respond, use `/agora-reply <thread-id> <your reply>`. To pull the")
+    print("human in if stuck, use `/agora-escalate <thread-id> <reason>`.")
     print(link_summary)
     print("=" * 72)
     print(content.strip())
     print("=" * 72)
     bus.audit("hook.injected", self_id=me.aoe_id, bytes=len(content))
     return 0
-
-
-def cmd_watchdog(args: argparse.Namespace) -> int:
-    """Watchdog loop — auto-nudges sessions stuck on rate-limit / overloaded errors.
-
-    Runs continuously until Ctrl+C. Use --once for a single pass (e.g. cron).
-    """
-    interval = args.interval
-    cooldown = args.cooldown
-    max_nudges = args.max_nudges
-    dry = args.dry
-    verbose = args.verbose
-
-    def one_pass() -> None:
-        decisions = watchdog.tick(
-            cooldown_secs=cooldown,
-            max_nudges=max_nudges,
-            dry_run=dry,
-        )
-        out = watchdog.render_decisions(decisions, verbose=verbose)
-        if out.strip() or verbose:
-            from datetime import datetime
-            ts = datetime.now().strftime("%H:%M:%S")
-            print(f"[{ts}] watchdog pass — {len(decisions)} sessions checked")
-            if out.strip():
-                print(out, end="")
-            elif verbose:
-                print("  (all clean)\n")
-
-    if args.once:
-        one_pass()
-        return 0
-
-    print(f"aoe-bus watchdog · interval={interval}s · cooldown={cooldown}s · "
-          f"max_nudges={max_nudges} · {'DRY-RUN' if dry else 'LIVE'}")
-    print("Ctrl+C to stop")
-    try:
-        while True:
-            one_pass()
-            time.sleep(interval)
-    except KeyboardInterrupt:
-        print("\nwatchdog stopped")
-        return 0
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -362,7 +319,7 @@ def cmd_status(args: argparse.Namespace) -> int:
             # ANSI clear screen + cursor home
             print("\033[2J\033[H", end="")
             from datetime import datetime
-            print(f"aoe-bus status · {datetime.now().strftime('%H:%M:%S')} · refresh {interval}s · Ctrl+C to exit")
+            print(f"agora status · {datetime.now().strftime('%H:%M:%S')} · refresh {interval}s · Ctrl+C to exit")
             print()
             print(status.render(rows, compact=compact), end="")
             time.sleep(interval)
@@ -373,7 +330,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 def cmd_pause(args: argparse.Namespace) -> int:
     bus.pause_bus()
-    print("✓ bus paused — no outbound messages until /bus-resume")
+    print("✓ bus paused — no outbound messages until /agora-resume")
     return 0
 
 
@@ -384,7 +341,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="aoe-bus")
+    p = argparse.ArgumentParser(prog="agora")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("whoami").set_defaults(func=cmd_whoami)
@@ -416,8 +373,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_esc.add_argument("reason", nargs="+")
     p_esc.set_defaults(func=cmd_escalate)
 
-    sub.add_parser("bus-pause").set_defaults(func=cmd_pause)
-    sub.add_parser("bus-resume").set_defaults(func=cmd_resume)
+    sub.add_parser("pause").set_defaults(func=cmd_pause)
+    sub.add_parser("resume").set_defaults(func=cmd_resume)
     sub.add_parser("hook-inject").set_defaults(func=cmd_hook_inject)
 
     p_status = sub.add_parser("status",
@@ -428,21 +385,6 @@ def build_parser() -> argparse.ArgumentParser:
                           help="one-line-per-session, no detail block")
     p_status.set_defaults(func=cmd_status)
 
-    p_wd = sub.add_parser("watchdog",
-                          help="auto-nudge sessions stuck on rate-limit/overloaded errors")
-    p_wd.add_argument("--interval", type=int, default=watchdog.DEFAULT_INTERVAL_SECS,
-                      metavar="SECS", help="poll every N seconds")
-    p_wd.add_argument("--cooldown", type=int, default=watchdog.DEFAULT_COOLDOWN_SECS,
-                      metavar="SECS", help="how long a session must be stalled before nudge")
-    p_wd.add_argument("--max-nudges", type=int, default=watchdog.DEFAULT_MAX_NUDGES,
-                      help="give up after N nudges per session per instance")
-    p_wd.add_argument("--once", action="store_true",
-                      help="single pass then exit (good for cron)")
-    p_wd.add_argument("--dry", action="store_true",
-                      help="log what would be nudged without firing")
-    p_wd.add_argument("--verbose", action="store_true",
-                      help="print line for clean sessions too")
-    p_wd.set_defaults(func=cmd_watchdog)
 
     return p
 

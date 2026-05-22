@@ -1,120 +1,108 @@
-# aoe-bus
+# agora
 
-Peer-to-peer messaging for Claude Code sessions running under [Agent of Empires](https://github.com/...).
+```
+                       _
+   __ _  __ _  ___  ___| |_ 
+  / _` |/ _` |/ _ \/ _ \ '__|
+ | (_| | (_| | (_) |  __/ |  
+  \__,_|\__, |\___/\___|_|   
+        |___/                
+                 
+peer-to-peer messaging for Claude Code sessions running under aoe
+```
 
-Lets a session say *"I'm working with `slovenia-crl`, ping me when you have something"* and have the two agents actually talk to each other — via `aoe send` — instead of forcing the human to copy-paste between panes.
+Each aoe Claude Code session is its own little island. Agora is the Greek public square where they meet, ask each other questions, argue across panes, and surface to you only when they actually need a human decision.
 
-## Quick install
+```
+   ┌──────────────────┐     <peer-msg>     ┌──────────────────┐
+   │  session: alice  │ ─────── ask ──────▶│  session: bob    │
+   │  reviewing PRs   │                    │  writing tests   │
+   │                  │◀────── reply ──────│                  │
+   └──────────────────┘                    └──────────────────┘
+            │                                       │
+            │            cap hit @ 3 rounds         │
+            ▼                                       ▼
+                        ┌──────────────────┐
+                        │  human-inbox.md  │  ← /agora-escalate
+                        │   (just you)     │     + notify-send
+                        └──────────────────┘
+```
+
+## What it does
+
+- **`/agora-link <peer>`** — durable, per-session list of peer sessions you can talk to
+- **`/agora-ask <peer> <message>`** — opens a thread, types the message into the peer's pane via `aoe send`
+- **`/agora-reply <thread-id> <message>`** — continues a thread (peer's `UserPromptSubmit` hook injects it on next prompt)
+- **`/agora-escalate <ref> <reason>`** — surfaces to one place with a sticky desktop notification, when the peers can't resolve
+- **`/agora-status`** — bird's-eye view: which sessions owe whom a reply, which threads escalated
+
+The wire format is plain XML inside the receiving agent's input area:
+
+```xml
+<peer-msg from="alice" thread="t_4a7b" type="ask" at="2026-05-22T10:00:00Z">
+Should we accept HTML attachments alongside PDFs in the VN scraper?
+</peer-msg>
+```
+
+## Safety rails — built in, not optional
+
+```
+  outbound budget   20 messages / hour / session  (AGORA_BUDGET_PER_HOUR to override)
+  loop detection    10-min window, whitespace+case normalized hash
+  round cap         20 rounds / thread             (AGORA_ROUND_CAP to override)
+  strangers         /agora-ask refuses unlinked targets
+  self-link         silently refused
+  kill switch       AGORA=off  OR  touch ~/.agora/.paused
+```
+
+When a rail fires, the CLI exits non-zero and the agent gets a clear hint to `/agora-escalate` instead of looping.
+
+## Install
 
 ```bash
-cd ~/Documents/Programming\ Projects/ClaudeCoding/aoe-bus
+git clone https://github.com/<your-user>/agora.git
+cd agora
 ./install.sh
 ```
 
 The installer:
-- Drops `aoe-bus` into `~/.local/bin/`
-- Symlinks 7 slash commands into `~/.claude/commands/`
-- Prints (but does NOT apply) the `settings.json` snippet to register the UserPromptSubmit hook — you merge it yourself
+- drops `agora` into `~/.local/bin/`
+- symlinks 8 slash commands into `~/.claude/commands/`
+- prints (but doesn't apply) the `UserPromptSubmit` hook snippet to merge into your `~/.claude/settings.json`
 
-After registering the hook, restart Claude Code (or open a fresh session) and you'll have:
-
-| Command | Purpose |
-|---|---|
-| `/bus-whoami` | Identity debug — label, aoe-id, bus state |
-| `/bus-link <peer>` | Remember a peer for this session |
-| `/bus-unlink <peer>` | Forget |
-| `/bus-links` | Show current links |
-| `/bus-ask <peer> <msg>` | Open a thread, send peer-msg |
-| `/bus-reply <thread> <msg>` | Continue a thread |
-| `/bus-escalate <ref> <why>` | Pull human in, surface to human-inbox.md |
-| `/bus-status` | Roll-up of bus state across all sessions (● marks attention) |
-| `/bus-watchdog` | Foreground watchdog loop (auto-nudges rate-limited sessions) |
-
-## Passive watchdog (recommended)
-
-For "set and forget" auto-recovery from API rate-limit cascades:
-
-```bash
-systemctl --user import-environment DISPLAY DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR
-systemctl --user daemon-reload
-systemctl --user enable --now aoe-bus-watchdog
-```
-
-Polls every 30s; nudges any session showing rate-limit/overloaded patterns
-after a 60s cooldown. Survives reboot, restarts on failure. Logs via
-`journalctl --user -u aoe-bus-watchdog -f`. Disable with
-`systemctl --user disable --now aoe-bus-watchdog`.
-
-## Architecture in three primitives
-
-| Primitive | What it is | Lives in |
-|---|---|---|
-| **Link** | Durable peer relationship a session remembers across turns | `~/.aoe-bus/sessions/<id>/links.json` |
-| **Message** | XML-tagged note delivered into another pane via `aoe send` | `~/.aoe-bus/threads/<id>.jsonl` |
-| **Escalate** | Surface to one human-inbox + fire desktop notification | `~/.aoe-bus/human-inbox.md` |
-
-## peer-msg wire format
-
-```xml
-<peer-msg from="<label>" thread="t_xxxxxxxx" type="ask" at="2026-05-22T10:00:00Z">
-The message body, free-form. Can be multi-line.
-</peer-msg>
-```
-
-`type` is one of: `ask`, `reply`, `fyi`, `escalate-cc`, `done`. The receiving session's `UserPromptSubmit` hook wraps incoming `<peer-msg>` blocks with a clear separator so the agent knows they're from peers, not the human.
-
-## Safety rails (built in, not optional)
-
-| Rail | Default | What it stops |
-|---|---|---|
-| **Outbound budget** | 20 msgs/hour per session (`AOE_BUS_BUDGET_PER_HOUR` to override) | Quota runaway from chatty agents |
-| **Loop detection** | 10-min window, normalized hash | Same-point reworded resends |
-| **Round cap** | 20 rounds/thread (`AOE_BUS_ROUND_CAP` to override) | Endless ping-pong without consensus |
-| **Kill switch** | `AOE_BUS=off` env OR `~/.aoe-bus/.paused` | Emergency halt |
-| **Self-link refused** | Always | You can't link a session to itself |
-| **Stranger refused** | Always | `/bus-ask` requires the target be a current `/bus-link` |
-| **Stuck-session watchdog** | systemd user unit (opt-in) | Anthropic rate-limit cascades — auto-nudges with "continue" |
-| **Sticky notifications** | urgency=critical | Lost notifications when operator was looking elsewhere |
-
-When a safety check fires, the CLI exits 3 and tells the agent (and you) which rail and why. Loop-detect and round-cap hints explicitly suggest `/bus-escalate`.
+After registering the hook, restart any aoe Claude session and `/agora-whoami` will work.
 
 ## File layout (runtime)
 
 ```
-~/.aoe-bus/
+~/.agora/
 ├── sessions/<aoe-id>/
-│   ├── links.json           # who am I linked to
-│   ├── inbox.md             # pending peer-msgs (cleared by hook each turn)
-│   └── inbox-archive.md     # everything ever delivered, for forensics
+│   ├── links.json          — who am I linked to
+│   ├── inbox.md            — pending peer-msgs (cleared by hook each turn)
+│   └── inbox-archive.md    — everything ever delivered, for forensics
 ├── threads/
-│   └── t_xxxxxxxx.jsonl     # header + msg lines per thread
-├── human-inbox.md           # all escalations across all sessions
-├── audit.log                # structured jsonl event log
-└── .paused                  # presence = bus is paused
+│   └── t_xxxxxxxx.jsonl    — header + msg lines per thread
+├── human-inbox.md          — every escalation across every session
+├── audit.log               — structured jsonl event log
+└── .paused                 — presence = bus is paused
 ```
-
-## How to use it (from inside a session)
-
-1. `/bus-link "EU scrapers Audit"` — remember that session
-2. `/bus-ask "EU scrapers Audit" "should we apply log-and-skip to AT_OEKB?"` — sends an `ask`. CLI prints the new thread id.
-3. Wait. The peer's `UserPromptSubmit` hook will inject the `<peer-msg>` into their next prompt. They respond with `/bus-reply <thread> <answer>`.
-4. Their reply arrives in YOUR inbox; the hook injects it on your next prompt.
-5. If you and the peer can't reach consensus after 3 rounds, the round cap forces `/bus-escalate <thread> <reason>` — appends to `~/.aoe-bus/human-inbox.md` + fires `notify-send`.
 
 ## Operator workflow
 
-Keep one tab tailing the human-inbox:
+One pane with the bird's-eye view, one with the human inbox:
 
 ```bash
-tail -f ~/.aoe-bus/human-inbox.md
+# Pane 1: live dashboard
+agora status --watch 3
+
+# Pane 2: human escalations
+tail -f ~/.agora/human-inbox.md
 ```
 
-That's where every escalation across all sessions lands, in time order, with the last 3 thread messages for context. You don't have to remember which session needs you — they tell you.
+## Sibling project
 
-## Status
-
-v0 — minimum viable peer messaging with safety rails. 60 unit tests, all green.
+[`lazarus`](https://github.com/<your-user>/lazarus) — separate daemon that auto-nudges aoe sessions stuck on Anthropic API rate-limit errors. Pairs naturally with agora: lazarus keeps sessions alive, agora lets them talk.
 
 ## License
 
-MIT — generic agent infra, no project IP entangled.
+MIT.

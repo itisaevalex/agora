@@ -13,7 +13,7 @@ sys.path.insert(0, str(ROOT))
 class TestEscalate(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
-        os.environ["AOE_BUS_ROOT"] = self.tmp
+        os.environ["AGORA_ROOT"] = self.tmp
         for mod in list(sys.modules):
             if mod.startswith("lib"):
                 del sys.modules[mod]
@@ -28,7 +28,7 @@ class TestEscalate(unittest.TestCase):
     def tearDown(self):
         import shutil
         shutil.rmtree(self.tmp, ignore_errors=True)
-        os.environ.pop("AOE_BUS_ROOT", None)
+        os.environ.pop("AGORA_ROOT", None)
 
     def test_write_freeform_escalation(self):
         block = self.esc.write("slovenia", "ad-hoc", "we're stuck on Spain CNMV scope")
@@ -102,7 +102,7 @@ class TestNotificationExitCode(unittest.TestCase):
         import tempfile, os, sys
         from pathlib import Path
         self.tmp = tempfile.mkdtemp()
-        os.environ["AOE_BUS_ROOT"] = self.tmp
+        os.environ["AGORA_ROOT"] = self.tmp
         for mod in list(sys.modules):
             if mod.startswith("lib"):
                 del sys.modules[mod]
@@ -115,7 +115,7 @@ class TestNotificationExitCode(unittest.TestCase):
     def tearDown(self):
         import os, shutil
         shutil.rmtree(self.tmp, ignore_errors=True)
-        os.environ.pop("AOE_BUS_ROOT", None)
+        os.environ.pop("AGORA_ROOT", None)
 
     def test_returns_false_when_notify_send_exits_nonzero(self):
         from unittest.mock import patch, MagicMock

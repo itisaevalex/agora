@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT))
 class TestBusCore(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
-        os.environ["AOE_BUS_ROOT"] = self.tmp
+        os.environ["AGORA_ROOT"] = self.tmp
         # Force re-import with patched root
         for mod in list(sys.modules):
             if mod.startswith("lib"):
@@ -27,7 +27,7 @@ class TestBusCore(unittest.TestCase):
     def tearDown(self):
         import shutil
         shutil.rmtree(self.tmp, ignore_errors=True)
-        os.environ.pop("AOE_BUS_ROOT", None)
+        os.environ.pop("AGORA_ROOT", None)
 
     def test_ensure_bus_root_creates_layout(self):
         self.bus.ensure_bus_root()
@@ -99,7 +99,7 @@ class TestBusCore(unittest.TestCase):
         )
 
     def test_bus_enabled_default_true(self):
-        os.environ.pop("AOE_BUS", None)
+        os.environ.pop("AGORA", None)
         self.assertTrue(self.bus.bus_enabled())
 
     def test_pause_resume_round_trip(self):
@@ -110,11 +110,11 @@ class TestBusCore(unittest.TestCase):
         self.assertTrue(self.bus.bus_enabled())
 
     def test_env_kill_switch(self):
-        os.environ["AOE_BUS"] = "off"
+        os.environ["AGORA"] = "off"
         try:
             self.assertFalse(self.bus.bus_enabled())
         finally:
-            del os.environ["AOE_BUS"]
+            del os.environ["AGORA"]
 
     def test_aoe_send_dry_run_is_pure(self):
         ok, out = self.bus.aoe_send("xyz", "hello", dry_run=True)

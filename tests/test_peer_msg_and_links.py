@@ -80,7 +80,7 @@ class TestPeerMsg(unittest.TestCase):
 class TestLinks(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
-        os.environ["AOE_BUS_ROOT"] = self.tmp
+        os.environ["AGORA_ROOT"] = self.tmp
         for mod in list(sys.modules):
             if mod.startswith("lib"):
                 del sys.modules[mod]
@@ -93,7 +93,7 @@ class TestLinks(unittest.TestCase):
     def tearDown(self):
         import shutil
         shutil.rmtree(self.tmp, ignore_errors=True)
-        os.environ.pop("AOE_BUS_ROOT", None)
+        os.environ.pop("AGORA_ROOT", None)
 
     def test_empty_links_for_new_session(self):
         self.assertEqual(self.links.load("self123"), [])

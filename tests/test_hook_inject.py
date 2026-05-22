@@ -14,7 +14,7 @@ sys.path.insert(0, str(ROOT))
 class TestHookInject(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
-        os.environ["AOE_BUS_ROOT"] = self.tmp
+        os.environ["AGORA_ROOT"] = self.tmp
         for mod in list(sys.modules):
             if mod.startswith("lib"):
                 del sys.modules[mod]
@@ -29,7 +29,7 @@ class TestHookInject(unittest.TestCase):
     def tearDown(self):
         import shutil
         shutil.rmtree(self.tmp, ignore_errors=True)
-        os.environ.pop("AOE_BUS_ROOT", None)
+        os.environ.pop("AGORA_ROOT", None)
         os.environ.pop("AOE_INSTANCE_ID", None)
 
     def _run_hook(self) -> str:
@@ -75,8 +75,8 @@ class TestHookInject(unittest.TestCase):
         self.assertIn("AOE-BUS INBOX", out)
         self.assertIn("alice", out)
         self.assertIn("logical question", out)
-        self.assertIn("/bus-reply", out)
-        self.assertIn("/bus-escalate", out)
+        self.assertIn("/agora-reply", out)
+        self.assertIn("/agora-escalate", out)
         # Inbox cleared
         self.assertEqual(self.inbox.peek("self-id"), "")
         # Archived

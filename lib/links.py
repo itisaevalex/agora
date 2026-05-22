@@ -1,4 +1,4 @@
-"""Per-session link list. Stored at ~/.aoe-bus/sessions/<aoe-id>/links.json."""
+"""Per-session link list. Stored at ~/.agora/sessions/<aoe-id>/links.json."""
 from __future__ import annotations
 
 import json

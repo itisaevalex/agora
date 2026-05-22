@@ -1,5 +1,5 @@
 """
-aoe-bus core library.
+agora core library.
 
 Stdlib-only. All I/O is explicit (no module-level side effects). Designed to be
 imported by slash-command scripts and the UserPromptSubmit hook.
@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Optional
 
 
-BUS_ROOT = Path(os.environ.get("AOE_BUS_ROOT", Path.home() / ".aoe-bus"))
+BUS_ROOT = Path(os.environ.get("AGORA_ROOT", Path.home() / ".agora"))
 AOE_CONFIG = Path.home() / ".config" / "agent-of-empires"
 SESSIONS_JSON = AOE_CONFIG / "profiles" / "default" / "sessions.json"
 
@@ -83,14 +83,14 @@ def _lookup_label(aoe_id: str) -> Optional[str]:
 # ---------- Storage paths ----------
 
 def ensure_bus_root() -> None:
-    """Idempotent. Creates ~/.aoe-bus/ and standard subdirs."""
+    """Idempotent. Creates ~/.agora/ and standard subdirs."""
     (BUS_ROOT / "sessions").mkdir(parents=True, exist_ok=True)
     (BUS_ROOT / "threads").mkdir(parents=True, exist_ok=True)
     audit = BUS_ROOT / "audit.log"
     audit.touch(exist_ok=True)
     human = BUS_ROOT / "human-inbox.md"
     if not human.exists():
-        human.write_text("# Human inbox — aoe-bus escalations\n\n")
+        human.write_text("# Human inbox — agora escalations\n\n")
 
 
 def session_dir(aoe_id: str) -> Path:
@@ -156,7 +156,7 @@ def msg_hash(target_id: str, msg_type: str, body: str) -> str:
 # ---------- Kill switch ----------
 
 def bus_enabled() -> bool:
-    if os.environ.get("AOE_BUS", "").lower() in ("off", "0", "false"):
+    if os.environ.get("AGORA", "").lower() in ("off", "0", "false"):
         return False
     flag = BUS_ROOT / ".paused"
     return not flag.exists()
@@ -180,7 +180,7 @@ def aoe_send(target_aoe_id: str, text: str, dry_run: bool = False) -> tuple[bool
     if dry_run:
         return True, f"[DRY] would send to {target_aoe_id}:\n{text}"
     if not bus_enabled():
-        return False, "bus is paused (AOE_BUS=off or ~/.aoe-bus/.paused exists)"
+        return False, "bus is paused (AGORA=off or ~/.agora/.paused exists)"
     try:
         proc = subprocess.run(
             ["aoe", "send", target_aoe_id, text],

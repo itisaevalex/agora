@@ -61,8 +61,8 @@ def fire_desktop_notification(self_label: str, reason: str) -> bool:
     try:
         proc = subprocess.run(
             [bin_, "-u", "critical", "-i", "dialog-warning",
-             "-a", "aoe-bus",
-             f"aoe-bus: {self_label} escalating",
+             "-a", "agora",
+             f"agora: {self_label} escalating",
              reason[:300]],
             timeout=3, check=False,
             capture_output=True, text=True,

@@ -33,7 +33,7 @@ def read_and_clear(self_aoe_id: str) -> str:
 
 
 def peek(self_aoe_id: str) -> str:
-    """Read inbox WITHOUT clearing — for /bus-inbox debug command."""
+    """Read inbox WITHOUT clearing — for /agora-inbox debug command."""
     p = bus.inbox_path(self_aoe_id)
     if not p.exists():
         return ""

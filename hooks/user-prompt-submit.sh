@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# aoe-bus UserPromptSubmit hook.
+# agora UserPromptSubmit hook.
 #
 # Reads stdin (the prompt event JSON from Claude Code) and prints additional
 # context to stdout when this session has unread peer-msgs in its inbox.
@@ -22,7 +22,7 @@ cat > /dev/null || true
 
 # Locate the bus binary
 BIN=""
-for candidate in "$HOME/.local/bin/aoe-bus" "$(command -v aoe-bus 2>/dev/null)"; do
+for candidate in "$HOME/.local/bin/agora" "$(command -v agora 2>/dev/null)"; do
     if [[ -n "$candidate" && -x "$candidate" ]]; then
         BIN="$candidate"
         break

@@ -13,7 +13,7 @@ sys.path.insert(0, str(ROOT))
 class TestSafety(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
-        os.environ["AOE_BUS_ROOT"] = self.tmp
+        os.environ["AGORA_ROOT"] = self.tmp
         for mod in list(sys.modules):
             if mod.startswith("lib"):
                 del sys.modules[mod]
@@ -28,7 +28,7 @@ class TestSafety(unittest.TestCase):
     def tearDown(self):
         import shutil
         shutil.rmtree(self.tmp, ignore_errors=True)
-        os.environ.pop("AOE_BUS_ROOT", None)
+        os.environ.pop("AGORA_ROOT", None)
 
     def _now(self):
         return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -95,7 +95,7 @@ class TestSafety(unittest.TestCase):
             round_cap=3,
         )
         self.assertFalse(ok)
-        self.assertIn("/bus-escalate", reason)
+        self.assertIn("/agora-escalate", reason)
 
     def test_round_cap_does_not_apply_to_ask(self):
         # Even on a heavily-replied thread, opening a NEW ask shouldn't trip round cap
@@ -126,13 +126,13 @@ if __name__ == "__main__":
 
 
 class TestSafetyEnvOverrides(unittest.TestCase):
-    """Cover the AOE_BUS_ROUND_CAP / AOE_BUS_BUDGET_PER_HOUR env knobs."""
+    """Cover the AGORA_ROUND_CAP / AGORA_BUDGET_PER_HOUR env knobs."""
 
     def setUp(self):
         import tempfile, os, sys
         from pathlib import Path
         self.tmp = tempfile.mkdtemp()
-        os.environ["AOE_BUS_ROOT"] = self.tmp
+        os.environ["AGORA_ROOT"] = self.tmp
         for mod in list(sys.modules):
             if mod.startswith("lib"):
                 del sys.modules[mod]
@@ -147,8 +147,8 @@ class TestSafetyEnvOverrides(unittest.TestCase):
     def tearDown(self):
         import os, shutil
         shutil.rmtree(self.tmp, ignore_errors=True)
-        os.environ.pop("AOE_BUS_ROOT", None)
-        for k in ("AOE_BUS_ROUND_CAP", "AOE_BUS_BUDGET_PER_HOUR"):
+        os.environ.pop("AGORA_ROOT", None)
+        for k in ("AGORA_ROUND_CAP", "AGORA_BUDGET_PER_HOUR"):
             os.environ.pop(k, None)
 
     def _now(self):
@@ -178,7 +178,7 @@ class TestSafetyEnvOverrides(unittest.TestCase):
                                                budget_per_hour=big_budget)
         self.assertFalse(ok_default)  # at-cap blocks
         # With env override raising to cap*2
-        os.environ["AOE_BUS_ROUND_CAP"] = str(cap * 2)
+        os.environ["AGORA_ROUND_CAP"] = str(cap * 2)
         ok_env, _ = self.safety.check_send("self", "peer", "reply", "next",
                                            thread_id="t_x",
                                            budget_per_hour=big_budget)
@@ -190,7 +190,7 @@ class TestSafetyEnvOverrides(unittest.TestCase):
         ok_default, _ = self.safety.check_send("self", "peer", "reply", "next",
                                                thread_id="t_y")
         self.assertTrue(ok_default)
-        os.environ["AOE_BUS_ROUND_CAP"] = "1"
+        os.environ["AGORA_ROUND_CAP"] = "1"
         ok_strict, reason = self.safety.check_send("self", "peer", "reply", "next",
                                                    thread_id="t_y")
         self.assertFalse(ok_strict)
@@ -200,7 +200,7 @@ class TestSafetyEnvOverrides(unittest.TestCase):
         import os
         cap = self.safety.DEFAULT_ROUND_CAP
         self._build_thread("t_z", cap * 2)
-        os.environ["AOE_BUS_ROUND_CAP"] = "not-a-number"
+        os.environ["AGORA_ROUND_CAP"] = "not-a-number"
         ok, _ = self.safety.check_send("self", "peer", "reply", "next",
                                        thread_id="t_z",
                                        budget_per_hour=cap * 10)
@@ -210,7 +210,7 @@ class TestSafetyEnvOverrides(unittest.TestCase):
         import os
         cap = self.safety.DEFAULT_ROUND_CAP
         self._build_thread("t_w", cap * 2)
-        os.environ["AOE_BUS_ROUND_CAP"] = "-5"
+        os.environ["AGORA_ROUND_CAP"] = "-5"
         ok, _ = self.safety.check_send("self", "peer", "reply", "next",
                                        thread_id="t_w",
                                        budget_per_hour=cap * 10)
@@ -225,14 +225,14 @@ class TestSafetyEnvOverrides(unittest.TestCase):
                 self.pm.PeerMsg("a", "t_b", "ask", f"m{i}", self._now()), "self")
         ok_default, _ = self.safety.check_send("self", "peer", "ask", "new")
         self.assertFalse(ok_default)
-        os.environ["AOE_BUS_BUDGET_PER_HOUR"] = "50"
+        os.environ["AGORA_BUDGET_PER_HOUR"] = "50"
         ok_env, _ = self.safety.check_send("self", "peer", "ask", "new2")
         self.assertTrue(ok_env)
 
     def test_explicit_argument_beats_env(self):
         import os
         self._build_thread("t_arg", 6)
-        os.environ["AOE_BUS_ROUND_CAP"] = "10"  # would allow
+        os.environ["AGORA_ROUND_CAP"] = "10"  # would allow
         # Explicit argument (not default) should win
         ok, reason = self.safety.check_send("self", "peer", "reply", "next",
                                             thread_id="t_arg", round_cap=2)

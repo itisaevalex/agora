@@ -1,6 +1,6 @@
 """Safety rails: loop detection, round caps, outbound budget.
 
-All checks live here so /bus-ask and /bus-reply share the same enforcement logic.
+All checks live here so /agora-ask and /agora-reply share the same enforcement logic.
 """
 from __future__ import annotations
 
@@ -39,19 +39,19 @@ def check_send(
     Order matters: cheapest checks first, escalation-implying checks last.
 
     Env overrides (applied when callers pass the module defaults):
-      AOE_BUS_ROUND_CAP      — int, raises/lowers the per-thread reply cap
-      AOE_BUS_BUDGET_PER_HOUR — int, raises/lowers the hourly outbound budget
+      AGORA_ROUND_CAP      — int, raises/lowers the per-thread reply cap
+      AGORA_BUDGET_PER_HOUR — int, raises/lowers the hourly outbound budget
     """
     if budget_per_hour == DEFAULT_BUDGET_PER_HOUR:
-        budget_per_hour = _env_int("AOE_BUS_BUDGET_PER_HOUR", DEFAULT_BUDGET_PER_HOUR)
+        budget_per_hour = _env_int("AGORA_BUDGET_PER_HOUR", DEFAULT_BUDGET_PER_HOUR)
     if round_cap == DEFAULT_ROUND_CAP:
-        round_cap = _env_int("AOE_BUS_ROUND_CAP", DEFAULT_ROUND_CAP)
+        round_cap = _env_int("AGORA_ROUND_CAP", DEFAULT_ROUND_CAP)
     # 1) Hourly outbound budget — cheapest, scans only recent jsonl entries
     recent = threads.recent_outbound_for(self_aoe_id, since_secs=3600)
     if len(recent) >= budget_per_hour:
         return False, (
             f"hourly outbound budget exhausted ({len(recent)}/{budget_per_hour}). "
-            f"Use /bus-escalate if this is urgent, otherwise wait."
+            f"Use /agora-escalate if this is urgent, otherwise wait."
         )
 
     # 2) Loop detection — refuse to send a near-duplicate within the window
@@ -67,7 +67,7 @@ def check_send(
             return False, (
                 "loop detected: near-identical message sent within "
                 f"the last {dup_window_secs}s. If the peer didn't respond, "
-                "use /bus-escalate instead of resending."
+                "use /agora-escalate instead of resending."
             )
 
     # 3) Round cap — only applies to /reply on existing threads
@@ -76,7 +76,7 @@ def check_send(
         if rounds >= round_cap:
             return False, (
                 f"thread {thread_id} has reached {rounds}/{round_cap} rounds. "
-                f"Per protocol, the next move MUST be /bus-escalate, not another reply."
+                f"Per protocol, the next move MUST be /agora-escalate, not another reply."
             )
 
     return True, ""
