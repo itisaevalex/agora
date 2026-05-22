@@ -11,14 +11,22 @@ Create a brand-new aoe Claude Code session as a child of this one. The new sessi
 - Registered in the lineage tree (visible via `/agora-tree`)
 - Started with the initial task dropped as its first prompt
 
-Useful when:
-- You want a focused sub-window for a specific task that you might come back to later
-- Different from the in-process Agent tool — this is a separate pane with its own context, its own conversation history, and survives the parent's death
+**PARSE `$ARGUMENTS`:**
+- `TITLE` = first whitespace-separated token (alphanumerics, dashes, dots, underscores, spaces only — NOT shell special chars)
+- `TASK` = everything else (any chars allowed)
 
-Run:
+**INVOKE the Bash tool with a heredoc for the task body:**
 
-!`agora spawn $ARGUMENTS`
+```bash
+agora spawn --body-stdin "<TITLE>" <<'AGORA_END_OF_MSG'
+<TASK>
+AGORA_END_OF_MSG
+```
 
-After spawning, the CLI prints the new aoe-id and reminds you of the immediate `/agora-ask <title> <q>` form. The child takes a few seconds to boot; the initial task is dropped automatically after boot.
+After spawning, the CLI prints the new aoe-id and the immediate `/agora-ask <title> <q>` form. The child takes ~2s to boot; the initial task is dropped automatically.
 
 Spawn budget defaults to 10 children per parent per hour (`AGORA_SPAWN_BUDGET` to override).
+
+Useful when:
+- You want a focused sub-window for a specific task you might come back to later
+- Different from the in-process `Agent` tool — this is a separate pane with its own context, its own conversation history, that survives the parent's death and that you can intervene in directly

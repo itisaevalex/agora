@@ -95,9 +95,17 @@ def cmd_links(args: argparse.Namespace) -> int:
     return 0
 
 
+def _read_body(args: argparse.Namespace, positional_attr: str = "body") -> str:
+    """Read body from stdin if --body-stdin else from positional args."""
+    if getattr(args, "body_stdin", False):
+        return sys.stdin.read().strip()
+    pos = getattr(args, positional_attr, None) or []
+    return " ".join(pos).strip()
+
+
 def cmd_ask(args: argparse.Namespace) -> int:
     me = _require_self()
-    body = " ".join(args.body).strip()
+    body = _read_body(args)
     if not body:
         print("error: empty message body", file=sys.stderr)
         return 2
@@ -157,7 +165,7 @@ def cmd_ask(args: argparse.Namespace) -> int:
 
 def cmd_reply(args: argparse.Namespace) -> int:
     me = _require_self()
-    body = " ".join(args.body).strip()
+    body = _read_body(args)
     if not body:
         print("error: empty reply body", file=sys.stderr)
         return 2
@@ -227,7 +235,7 @@ def cmd_reply(args: argparse.Namespace) -> int:
 
 def cmd_escalate(args: argparse.Namespace) -> int:
     me = _require_self()
-    reason = " ".join(args.reason).strip()
+    reason = _read_body(args, positional_attr="reason")
     if not reason:
         print("error: empty reason", file=sys.stderr)
         return 2
@@ -264,7 +272,7 @@ def cmd_escalate(args: argparse.Namespace) -> int:
 def cmd_spawn(args: argparse.Namespace) -> int:
     me = _require_self()
     title = args.title
-    task = " ".join(args.task).strip()
+    task = _read_body(args, positional_attr="task")
     if not task:
         print("error: empty initial task", file=sys.stderr)
         return 2
@@ -406,19 +414,25 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_ask = sub.add_parser("ask")
     p_ask.add_argument("target")
-    p_ask.add_argument("body", nargs="+")
+    p_ask.add_argument("body", nargs="*",
+                       help="message body (or use --body-stdin to read from stdin)")
+    p_ask.add_argument("--body-stdin", action="store_true",
+                       dest="body_stdin",
+                       help="read message body from stdin (safer for messages with parens/dashes/etc)")
     p_ask.add_argument("--dry", action="store_true")
     p_ask.set_defaults(func=cmd_ask)
 
     p_reply = sub.add_parser("reply")
     p_reply.add_argument("thread")
-    p_reply.add_argument("body", nargs="+")
+    p_reply.add_argument("body", nargs="*")
+    p_reply.add_argument("--body-stdin", action="store_true", dest="body_stdin")
     p_reply.add_argument("--dry", action="store_true")
     p_reply.set_defaults(func=cmd_reply)
 
     p_esc = sub.add_parser("escalate")
     p_esc.add_argument("ref")
-    p_esc.add_argument("reason", nargs="+")
+    p_esc.add_argument("reason", nargs="*")
+    p_esc.add_argument("--body-stdin", action="store_true", dest="body_stdin")
     p_esc.set_defaults(func=cmd_escalate)
 
     sub.add_parser("pause").set_defaults(func=cmd_pause)
@@ -427,7 +441,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_spawn = sub.add_parser("spawn", help="create a child aoe session with a starting task")
     p_spawn.add_argument("title", help="title for the new session (alphanumerics + dash/dot/underscore/space)")
-    p_spawn.add_argument("task", nargs="+", help="initial task to drop into the child as its first prompt")
+    p_spawn.add_argument("task", nargs="*", help="initial task (or use --body-stdin)")
+    p_spawn.add_argument("--body-stdin", action="store_true", dest="body_stdin")
     p_spawn.add_argument("--dry", action="store_true")
     p_spawn.set_defaults(func=cmd_spawn)
 

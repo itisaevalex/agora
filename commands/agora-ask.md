@@ -4,15 +4,25 @@ argument-hint: <peer-label> <your message>
 allowed-tools: Bash(agora:*)
 ---
 
-The user wants to send a question or proposal to a linked peer aoe session. Parse `$ARGUMENTS` to extract the target label (first token, or quoted-string) and the message body (rest).
+The user wants to send a peer-msg via agora.
 
-Run:
+**PARSE `$ARGUMENTS`:**
+- `TARGET` = first whitespace-separated token (peer label or aoe-id prefix)
+- `BODY` = everything else (may contain parens, dashes, backticks, `--flags`, anything)
 
-!`agora ask $ARGUMENTS`
+**INVOKE the Bash tool** with a heredoc form so the body bypasses bash word-splitting and argparse flag-parsing. This is critical — without it, parens crash bash and any `--word` mid-body trips argparse:
 
-Notes:
-- The target MUST already be in the user's `/agora-links` — if not, the CLI will error and the user should `/agora-link <target>` first.
-- The CLI assigns a fresh thread id (`t_<8hex>`) and reports it. Memorize this id — if the peer replies, you'll see a `<peer-msg>` block in your next prompt with the same `thread=...` attr.
-- If the user just wants to preview without actually sending, suggest they add `--dry` at the end.
+```bash
+agora ask --body-stdin "<TARGET>" <<'AGORA_END_OF_MSG'
+<BODY>
+AGORA_END_OF_MSG
+```
 
-After the CLI runs, report the thread id and one-line summary of what was sent. Do NOT predict what the peer will say — they'll reply async on their own clock.
+If the body literally contains the string `AGORA_END_OF_MSG`, pick a different delimiter (e.g. `AGORA_BODY_X9`).
+
+**After the CLI runs:**
+- exit 0: report the thread id printed by the CLI (`t_xxxxxxxx`)
+- exit 1 + "is not linked": the target isn't in `/agora-links` — tell the user to `/agora-link <target>` first
+- exit 3 (BLOCKED): a safety rail fired — relay the reason; usually means `/agora-escalate` is the next move
+
+Do NOT predict what the peer will say — they reply async on their own clock.

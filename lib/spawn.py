@@ -51,7 +51,9 @@ def spawn(
         return False, (f"spawn budget exhausted ({recent}/{budget} children "
                        f"in last hour). Adjust AGORA_SPAWN_BUDGET to override."), None
 
-    # Validate title — aoe choked earlier on titles with spaces; use a safe form
+    # Validate title — must be shell-safe (aoe add takes it via subprocess argv,
+    # but we restrict further to dodge any tmux/aoe quirks). Reject any chars
+    # not in the allowed set; this also blocks injection like 'foo; rm -rf'.
     if not re.match(r"^[\w\-. ]+$", title):
         return False, f"invalid title {title!r}: alphanumerics, dashes, dots, underscores, spaces only", None
 

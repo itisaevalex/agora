@@ -118,3 +118,53 @@ class TestThreadsAndInbox(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBodyStdin(unittest.TestCase):
+    """Tests for --body-stdin handling in cmd_ask/reply/escalate/spawn."""
+    def setUp(self):
+        import os, tempfile, sys
+        from pathlib import Path
+        self.tmp = tempfile.mkdtemp()
+        os.environ["AGORA_ROOT"] = self.tmp
+        for mod in list(sys.modules):
+            if mod.startswith("lib"):
+                del sys.modules[mod]
+        from lib import bus, cli
+        self.bus = bus
+        self.cli = cli
+        self.bus.BUS_ROOT = Path(self.tmp)
+        self.bus.ensure_bus_root()
+
+    def tearDown(self):
+        import os, shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        os.environ.pop("AGORA_ROOT", None)
+
+    def test_read_body_stdin_returns_stdin_content(self):
+        import argparse, io, sys
+        old_stdin = sys.stdin
+        sys.stdin = io.StringIO("body via stdin\nwith newlines and (parens) and --flags")
+        try:
+            args = argparse.Namespace(body_stdin=True, body=[])
+            result = self.cli._read_body(args)
+        finally:
+            sys.stdin = old_stdin
+        self.assertEqual(result, "body via stdin\nwith newlines and (parens) and --flags")
+
+    def test_read_body_positional_when_no_stdin_flag(self):
+        import argparse
+        args = argparse.Namespace(body_stdin=False, body=["hello", "world"])
+        self.assertEqual(self.cli._read_body(args), "hello world")
+
+    def test_read_body_handles_missing_attr(self):
+        import argparse
+        # No body_stdin attribute at all → falls through to positional
+        args = argparse.Namespace(body=["x"])
+        self.assertEqual(self.cli._read_body(args), "x")
+
+    def test_read_body_alternate_positional_attr(self):
+        import argparse, io, sys
+        # escalate uses 'reason', spawn uses 'task'
+        args = argparse.Namespace(body_stdin=False, reason=["why", "stuck"])
+        self.assertEqual(self.cli._read_body(args, positional_attr="reason"), "why stuck")
