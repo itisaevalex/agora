@@ -23,7 +23,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from lib import bus, inbox, links, peer_msg, threads  # noqa: E402
+from lib import bus, escalate, inbox, links, peer_msg, threads  # noqa: E402
 
 
 def _require_self() -> bus.SessionIdentity:
@@ -206,8 +206,39 @@ def cmd_reply(args: argparse.Namespace) -> int:
 
 
 def cmd_escalate(args: argparse.Namespace) -> int:
-    print("escalate: not yet implemented (Task #6)", file=sys.stderr)
-    return 2
+    me = _require_self()
+    reason = " ".join(args.reason).strip()
+    if not reason:
+        print("error: empty reason", file=sys.stderr)
+        return 2
+
+    # If ref looks like a thread id, treat it as such; otherwise it's freeform
+    thread_id = args.ref if args.ref.startswith("t_") else None
+
+    block = escalate.write(me.label, args.ref, reason, thread_id=thread_id)
+
+    notified = escalate.fire_desktop_notification(me.label, reason)
+
+    # Also CC linked peers with type=escalate-cc so they know human is involved
+    if thread_id and bus.bus_enabled():
+        data = threads.read_thread(thread_id)
+        if data is not None:
+            cc_msg = peer_msg.PeerMsg(
+                sender_label=me.label, thread=thread_id, msg_type="escalate-cc",
+                body=f"Escalated to human. Reason: {reason}",
+                at=bus.now_iso(),
+            )
+            threads.append_msg(thread_id, cc_msg, me.aoe_id)
+            for p in data["header"]["participants"]:
+                if p != me.aoe_id:
+                    inbox.append_to(p, cc_msg)
+                    bus.aoe_send(p, cc_msg.to_wire())
+
+    print(f"✓ escalated — appended to {bus.human_inbox_path()}")
+    if notified:
+        print("✓ desktop notification fired (notify-send)")
+    print(f"  AOE Admin tab can: tail -f {bus.human_inbox_path()}")
+    return 0
 
 
 def cmd_hook_inject(args: argparse.Namespace) -> int:
