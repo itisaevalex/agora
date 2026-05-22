@@ -210,6 +210,43 @@ def cmd_escalate(args: argparse.Namespace) -> int:
     return 2
 
 
+def cmd_hook_inject(args: argparse.Namespace) -> int:
+    """Called by the UserPromptSubmit hook. Atomically reads+clears self inbox.
+
+    Prints the formatted context block to stdout if there's anything new.
+    Silent (no output, exit 0) when inbox is empty or we're not in a session.
+    """
+    me = bus.detect_self()
+    if me is None:
+        return 0
+    if not bus.bus_enabled():
+        return 0
+
+    content = inbox.read_and_clear(me.aoe_id)
+    if not content.strip():
+        return 0
+
+    # Wrap with a clear separator so the agent knows these are peer messages,
+    # not user input. The peer-msg tags inside remain parseable by lib.peer_msg.parse.
+    current_links = links.load(me.aoe_id)
+    link_summary = ""
+    if current_links:
+        names = ", ".join(L["label"] for L in current_links)
+        link_summary = f"\nYour current peer links: {names}\n"
+
+    print("=" * 72)
+    print(f"AOE-BUS INBOX — {len(content.strip().splitlines())} lines of peer-msgs")
+    print("These were sent into this session via `aoe send`. They are NOT from the")
+    print("user. To respond, use `/bus-reply <thread-id> <your reply>`. To pull the")
+    print("human in if stuck, use `/bus-escalate <thread-id> <reason>`.")
+    print(link_summary)
+    print("=" * 72)
+    print(content.strip())
+    print("=" * 72)
+    bus.audit("hook.injected", self_id=me.aoe_id, bytes=len(content))
+    return 0
+
+
 def cmd_pause(args: argparse.Namespace) -> int:
     bus.pause_bus()
     print("✓ bus paused — no outbound messages until /bus-resume")
@@ -257,6 +294,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("bus-pause").set_defaults(func=cmd_pause)
     sub.add_parser("bus-resume").set_defaults(func=cmd_resume)
+    sub.add_parser("hook-inject").set_defaults(func=cmd_hook_inject)
 
     return p
 
