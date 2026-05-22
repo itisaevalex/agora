@@ -195,3 +195,31 @@ def aoe_send(target_aoe_id: str, text: str, dry_run: bool = False) -> tuple[bool
         return False, "aoe send timed out after 10s"
     except Exception as e:
         return False, f"aoe send failed: {e}"
+
+
+# Empirical tmux send-keys limit on Linux: ~3 KB delivers reliably, ~4 KB is the
+# pty buffer cap, beyond that bytes are silently dropped or tmux errors with
+# "command too long". For peer-msgs over this size, we send a small nudge instead
+# and rely on the receiver's UserPromptSubmit hook to inject the full body from
+# inbox.md (which has no size limit).
+TMUX_SAFE_SIZE_BYTES = 3000
+
+
+def aoe_send_peer_msg(target_aoe_id: str, sender_label: str, thread: str,
+                      wire_text: str, dry_run: bool = False) -> tuple[bool, str]:
+    """Deliver a peer-msg, automatically nudging-only for large bodies.
+
+    For small messages (< TMUX_SAFE_SIZE_BYTES): dump the full peer-msg into
+    the target pane (immediate visibility, agent responds even without hook).
+    For large messages: send a short nudge so the receiver's UserPromptSubmit
+    hook injects the full body from inbox.md on next prompt.
+    """
+    if len(wire_text) < TMUX_SAFE_SIZE_BYTES:
+        return aoe_send(target_aoe_id, wire_text, dry_run=dry_run)
+
+    nudge = (
+        f"📨 large agora peer-msg from {sender_label} on thread {thread} "
+        f"({len(wire_text)} bytes) — your UserPromptSubmit hook will inject "
+        f"the full body from inbox.md on your next prompt."
+    )
+    return aoe_send(target_aoe_id, nudge, dry_run=dry_run)

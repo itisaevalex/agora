@@ -149,7 +149,7 @@ def cmd_ask(args: argparse.Namespace) -> int:
     threads.append_msg(thread_id, msg, me.aoe_id)
     inbox.append_to(peer["aoe_id"], msg)
 
-    ok, output = bus.aoe_send(peer["aoe_id"], msg.to_wire())
+    ok, output = bus.aoe_send_peer_msg(peer["aoe_id"], me.label, thread_id, msg.to_wire())
     if not ok:
         bus.audit("ask.send_failed", thread=thread_id, peer=peer["aoe_id"], error=output)
         print(f"warning: thread {thread_id} created and peer's inbox updated, "
@@ -221,7 +221,7 @@ def cmd_reply(args: argparse.Namespace) -> int:
 
     threads.append_msg(args.thread, msg, me.aoe_id)
     inbox.append_to(other_id, msg)
-    ok, output = bus.aoe_send(other_id, msg.to_wire())
+    ok, output = bus.aoe_send_peer_msg(other_id, me.label, args.thread, msg.to_wire())
     if not ok:
         bus.audit("reply.send_failed", thread=args.thread, error=output)
         print(f"warning: aoe send failed: {output} (inbox still updated)",
@@ -260,7 +260,7 @@ def cmd_escalate(args: argparse.Namespace) -> int:
             for p in data["header"]["participants"]:
                 if p != me.aoe_id:
                     inbox.append_to(p, cc_msg)
-                    bus.aoe_send(p, cc_msg.to_wire())
+                    bus.aoe_send_peer_msg(p, me.label, thread_id, cc_msg.to_wire())
 
     print(f"✓ escalated — appended to {bus.human_inbox_path()}")
     if notified:
