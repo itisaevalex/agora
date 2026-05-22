@@ -17,7 +17,27 @@ set -u
 # Drain stdin so Claude Code doesn't block (we don't actually need it)
 cat > /dev/null || true
 
-# Only inject if we're inside an aoe session
+# Resolve AOE_INSTANCE_ID. Claude Code may strip env when forking hooks, so
+# fall back to deriving it from the tmux session name (format:
+# aoe_<title>_<aoe-id-prefix-8>). Look up the full ID from aoe's sessions.json.
+if [[ -z "${AOE_INSTANCE_ID:-}" && -n "${TMUX:-}" ]]; then
+    SESSION_NAME=$(tmux display-message -p '#S' 2>/dev/null)
+    if [[ "$SESSION_NAME" =~ _([a-f0-9]{8})$ ]]; then
+        PREFIX="${BASH_REMATCH[1]}"
+        AOE_INSTANCE_ID=$(python3 -c "
+import json, sys
+try:
+    data = json.load(open('$HOME/.config/agent-of-empires/profiles/default/sessions.json'))
+    for e in data:
+        if e.get('id','').startswith('$PREFIX'):
+            print(e['id']); break
+except: pass
+" 2>/dev/null)
+        export AOE_INSTANCE_ID
+    fi
+fi
+
+# Still no AOE_INSTANCE_ID? Silent no-op.
 [[ -z "${AOE_INSTANCE_ID:-}" ]] && exit 0
 
 # Locate the bus binary
