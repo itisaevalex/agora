@@ -70,7 +70,37 @@ echo ""
 echo "(I did NOT edit settings.json automatically — review and merge yourself.)"
 echo ""
 
-# ---- 4. Self-test ----
+# ---- 4. Optional: systemd user unit for passive watchdog ----
+SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
+SYSTEMD_UNIT="$SYSTEMD_USER_DIR/aoe-bus-watchdog.service"
+if command -v systemctl >/dev/null 2>&1; then
+    mkdir -p "$SYSTEMD_USER_DIR"
+    sed "s|__AOE_BUS_REPO_PLACEHOLDER__|$REPO|g" \
+        "$REPO/systemd/aoe-bus-watchdog.service" > "$SYSTEMD_UNIT"
+    echo "✓ installed: $SYSTEMD_UNIT"
+    echo ""
+    echo "─── ACTIVATE THE PASSIVE WATCHDOG ──────────────────────────────────"
+    echo "To enable auto-nudge for rate-limited stuck sessions (recommended):"
+    echo ""
+    echo "  # Make sure user systemd has access to DBus/DISPLAY for notify-send:"
+    echo "  systemctl --user import-environment DISPLAY DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR"
+    echo ""
+    echo "  # Enable + start:"
+    echo "  systemctl --user daemon-reload"
+    echo "  systemctl --user enable --now aoe-bus-watchdog"
+    echo ""
+    echo "  # Check status / tail logs:"
+    echo "  systemctl --user status aoe-bus-watchdog"
+    echo "  journalctl --user -u aoe-bus-watchdog -f"
+    echo ""
+    echo "  # Disable later:"
+    echo "  systemctl --user disable --now aoe-bus-watchdog"
+    echo ""
+else
+    echo "(systemctl not found — passive watchdog setup skipped; run manually: aoe-bus watchdog)"
+fi
+
+# ---- 5. Self-test ----
 echo "─── SELF-TEST ──────────────────────────────────────────────────────"
 if [[ -z "${AOE_INSTANCE_ID:-}" ]]; then
     echo "⚠ not inside an aoe session (no AOE_INSTANCE_ID) — skipping live test."
