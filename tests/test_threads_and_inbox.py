@@ -168,3 +168,65 @@ class TestBodyStdin(unittest.TestCase):
         # escalate uses 'reason', spawn uses 'task'
         args = argparse.Namespace(body_stdin=False, reason=["why", "stuck"])
         self.assertEqual(self.cli._read_body(args, positional_attr="reason"), "why stuck")
+
+
+class TestPaneAttachedDetection(unittest.TestCase):
+    """The attached-pane check that avoids stuffing peer-msgs into a watched pane."""
+    def setUp(self):
+        import os, tempfile, sys
+        from pathlib import Path
+        self.tmp = tempfile.mkdtemp()
+        os.environ["AGORA_ROOT"] = self.tmp
+        for mod in list(sys.modules):
+            if mod.startswith("lib"):
+                del sys.modules[mod]
+        from lib import bus
+        self.bus = bus
+        self.bus.BUS_ROOT = Path(self.tmp)
+        self.bus.ensure_bus_root()
+
+    def tearDown(self):
+        import os, shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        os.environ.pop("AGORA_ROOT", None)
+
+    def test_attached_returns_false_when_tmux_lists_no_matching_session(self):
+        from unittest.mock import patch, MagicMock
+        with patch("subprocess.run",
+                   return_value=MagicMock(returncode=0, stdout="aoe_other_xyz123\n", stderr="")):
+            self.assertFalse(self.bus.pane_is_attached("abc12345deadbeef"))
+
+    def test_attached_returns_true_when_prefix_matches(self):
+        from unittest.mock import patch, MagicMock
+        with patch("subprocess.run",
+                   return_value=MagicMock(returncode=0, stdout="aoe_some_abc12345\n", stderr="")):
+            self.assertTrue(self.bus.pane_is_attached("abc12345deadbeef"))
+
+    def test_attached_returns_false_on_subprocess_error(self):
+        from unittest.mock import patch
+        import subprocess
+        with patch("subprocess.run", side_effect=FileNotFoundError):
+            self.assertFalse(self.bus.pane_is_attached("any-id"))
+
+    def test_peer_msg_falls_back_to_nudge_when_attached(self):
+        from unittest.mock import patch, MagicMock
+        # Simulate: short message, but pane is attached
+        with patch.object(self.bus, "pane_is_attached", return_value=True), \
+             patch("subprocess.run",
+                   return_value=MagicMock(returncode=0, stdout="", stderr="")) as run:
+            ok, _ = self.bus.aoe_send_peer_msg("target-id", "alice", "t_xyz", "hi")
+        self.assertTrue(ok)
+        # The send-keys text should be the nudge form, not "hi"
+        sent_text = run.call_args[0][0][-1]  # last arg = the text
+        self.assertIn("📨 agora peer-msg", sent_text)
+        self.assertIn("human focused", sent_text)
+        self.assertNotIn("hi", sent_text.split("📨")[0])  # original body NOT delivered
+
+    def test_peer_msg_sends_full_when_unattached_and_small(self):
+        from unittest.mock import patch, MagicMock
+        with patch.object(self.bus, "pane_is_attached", return_value=False), \
+             patch("subprocess.run",
+                   return_value=MagicMock(returncode=0, stdout="", stderr="")) as run:
+            self.bus.aoe_send_peer_msg("target-id", "alice", "t_xyz", "the full msg")
+        sent_text = run.call_args[0][0][-1]
+        self.assertEqual(sent_text, "the full msg")

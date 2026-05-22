@@ -205,21 +205,59 @@ def aoe_send(target_aoe_id: str, text: str, dry_run: bool = False) -> tuple[bool
 TMUX_SAFE_SIZE_BYTES = 3000
 
 
+def pane_is_attached(aoe_id: str) -> bool:
+    """Return True if a tmux client is currently attached to the target pane.
+
+    Used to avoid typing peer-msgs into a pane the user is actively watching/
+    interacting with (which would appear mid-input as if magically inserted).
+    """
+    try:
+        # tmux list-clients with -F gives the session_name each client is on.
+        # aoe names sessions like aoe_<title>_<aoe-id-prefix>, so we grep for
+        # the aoe-id's first 8 chars as a suffix match.
+        proc = subprocess.run(
+            ["tmux", "list-clients", "-F", "#{session_name}"],
+            capture_output=True, text=True, timeout=3,
+        )
+        if proc.returncode != 0:
+            return False
+        prefix = aoe_id[:8]
+        for sess in proc.stdout.splitlines():
+            if sess.endswith(prefix) or f"_{prefix}" in sess:
+                return True
+        return False
+    except (subprocess.TimeoutExpired, OSError, FileNotFoundError):
+        return False
+
+
 def aoe_send_peer_msg(target_aoe_id: str, sender_label: str, thread: str,
                       wire_text: str, dry_run: bool = False) -> tuple[bool, str]:
-    """Deliver a peer-msg, automatically nudging-only for large bodies.
+    """Deliver a peer-msg, automatically nudging-only when delivering raw text
+    would create poor UX or hit a transport limit.
 
-    For small messages (< TMUX_SAFE_SIZE_BYTES): dump the full peer-msg into
-    the target pane (immediate visibility, agent responds even without hook).
-    For large messages: send a short nudge so the receiver's UserPromptSubmit
-    hook injects the full body from inbox.md on next prompt.
+    Two reasons to fall back to nudge-only:
+      1) target wire is large (> TMUX_SAFE_SIZE_BYTES, tmux drops bytes)
+      2) target pane has an attached client (user is watching it — typing
+         into their input box mid-conversation is jarring)
+
+    In both cases, the full peer-msg is already in inbox.md; the receiver's
+    UserPromptSubmit hook delivers it with proper visual separator on their
+    next prompt-submit.
     """
-    if len(wire_text) < TMUX_SAFE_SIZE_BYTES:
+    reason = None
+    if len(wire_text) >= TMUX_SAFE_SIZE_BYTES:
+        reason = f"large body ({len(wire_text)} bytes)"
+    elif pane_is_attached(target_aoe_id):
+        reason = "human focused on receiving pane"
+
+    if reason is None:
         return aoe_send(target_aoe_id, wire_text, dry_run=dry_run)
 
     nudge = (
-        f"📨 large agora peer-msg from {sender_label} on thread {thread} "
-        f"({len(wire_text)} bytes) — your UserPromptSubmit hook will inject "
-        f"the full body from inbox.md on your next prompt."
+        f"📨 agora peer-msg from {sender_label} on thread {thread} "
+        f"({reason}) — your UserPromptSubmit hook will inject the full body "
+        f"from inbox.md on your next prompt."
     )
+    audit("peer_msg.nudge_only", target=target_aoe_id, reason=reason,
+          body_bytes=len(wire_text))
     return aoe_send(target_aoe_id, nudge, dry_run=dry_run)
