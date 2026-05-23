@@ -145,6 +145,22 @@ After registering the hook, restart any aoe Claude session and `/agora-whoami` w
 - **macOS** — full support. Desktop notifications via `osascript` (Notification Center).
 - **WSL / anything else** — peer-msg + thread + escalation work everywhere; desktop notifications gracefully no-op with a terminal-bell fallback.
 
+### Bootstrap from inside an aoe Claude session
+
+Want a Claude Code session running under aoe to install both repos itself (useful for onboarding a coworker's machine)? Paste this prompt into the session:
+
+> Install agora + lazarus from itisaevalex on github, native install for this OS (macOS launchd or Linux systemd).
+>
+> Steps:
+> 1. `git clone https://github.com/itisaevalex/agora.git ~/code/agora` (skip if dir exists)
+> 2. `git clone https://github.com/itisaevalex/lazarus.git ~/code/lazarus` (skip if dir exists)
+> 3. `bash ~/code/agora/install.sh --apply-hook` — installs binary + slash commands AND merges the `UserPromptSubmit` hook into `~/.claude/settings.json` (backs up first)
+> 4. `bash ~/code/lazarus/install.sh --start-daemon` — installs binary + slash commands AND activates the system daemon (launchctl on macOS / systemctl --user on Linux)
+> 5. Verify: `~/.local/bin/agora whoami` should print a label + aoe-id.
+> 6. Tell me to run `aoe restart <this-session-id>` from outside so Claude re-reads `settings.json`. After restart, `/agora-whoami`, `/agora-link`, `/agora-ask` etc. will be live.
+
+If you'd rather drive the install manually, see the [Install](#install) section above. The `--apply-hook` and `--start-daemon` flags are explicitly safe to skip — the installer always prints what it would do first.
+
 ## Slash commands
 
 | Command | Purpose |
