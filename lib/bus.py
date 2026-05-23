@@ -323,16 +323,24 @@ def aoe_send_peer_msg(target_aoe_id: str, sender_label: str, thread: str,
               body_bytes=len(wire_text))
         return True, "silent (user drafting, body in inbox.md for hook delivery)"
 
-    # NUDGE path: tiny notice, full body via hook
+    # NUDGE path: tiny notice telling the agent to READ inbox.md themselves.
+    # Previously this relied on the UserPromptSubmit hook to auto-inject, but
+    # Claude Code strips env when forking hooks (AOE_INSTANCE_ID + TMUX both
+    # gone), so the hook silently exits and the body never lands. Telling the
+    # agent to use Read tool on the inbox path bypasses the hook entirely.
     if len(wire_text) >= TMUX_SAFE_SIZE_BYTES:
+        inbox_path = BUS_ROOT / "sessions" / target_aoe_id / "inbox.md"
         nudge = (
             f"📨 agora peer-msg from {sender_label} on thread {thread} "
-            f"({len(wire_text)} bytes) — your UserPromptSubmit hook will "
-            f"inject the full body from inbox.md on your next prompt."
+            f"({len(wire_text)} bytes too big for tmux send-keys). "
+            f"Use the Read tool on {inbox_path} to see this and any other "
+            f"queued peer-msgs in full. After reading, /agora-reply {thread} "
+            f"<your response> as usual, then truncate inbox.md so you don't "
+            f"double-process: > {inbox_path}"
         )
         audit("peer_msg.nudge",
               target=target_aoe_id, reason="large body",
-              body_bytes=len(wire_text))
+              body_bytes=len(wire_text), inbox_path=str(inbox_path))
         return aoe_send(target_aoe_id, nudge)
 
     # FULL path: agent will see it as a pasted prompt and respond
