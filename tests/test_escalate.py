@@ -148,5 +148,62 @@ class TestNotificationExitCode(unittest.TestCase):
             self.assertIn("-u", args)
 
 
+class TestMacOSNotification(unittest.TestCase):
+    def setUp(self):
+        import tempfile, os, sys
+        from pathlib import Path
+        self.tmp = tempfile.mkdtemp()
+        os.environ["AGORA_ROOT"] = self.tmp
+        for mod in list(sys.modules):
+            if mod.startswith("lib"):
+                del sys.modules[mod]
+        from lib import bus, escalate
+        self.bus = bus
+        self.esc = escalate
+        self.bus.BUS_ROOT = Path(self.tmp)
+        self.bus.ensure_bus_root()
+
+    def tearDown(self):
+        import os, shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        os.environ.pop("AGORA_ROOT", None)
+
+    def test_routes_to_osascript_on_darwin(self):
+        from unittest.mock import patch, MagicMock
+        with patch.object(self.esc, "_is_macos", return_value=True), \
+             patch("shutil.which", return_value="/usr/bin/osascript"), \
+             patch("subprocess.run") as run:
+            run.return_value = MagicMock(returncode=0, stderr="")
+            self.assertTrue(self.esc.fire_desktop_notification("alice", "test reason"))
+            args = run.call_args[0][0]
+            self.assertEqual(args[0], "/usr/bin/osascript")
+            self.assertEqual(args[1], "-e")
+            self.assertIn("display notification", args[2])
+            self.assertIn("alice", args[2])
+            audit = self.bus.audit_log_path().read_text()
+            self.assertIn("notify.sent", audit)
+            self.assertIn("osascript", audit)
+
+    def test_returns_false_when_osascript_missing(self):
+        from unittest.mock import patch
+        with patch.object(self.esc, "_is_macos", return_value=True), \
+             patch("shutil.which", return_value=None):
+            self.assertFalse(self.esc.fire_desktop_notification("alice", "x"))
+            audit = self.bus.audit_log_path().read_text()
+            self.assertIn("notify.skipped", audit)
+            self.assertIn("osascript not on PATH", audit)
+
+    def test_escapes_double_quotes_in_body(self):
+        from unittest.mock import patch, MagicMock
+        with patch.object(self.esc, "_is_macos", return_value=True), \
+             patch("shutil.which", return_value="/usr/bin/osascript"), \
+             patch("subprocess.run") as run:
+            run.return_value = MagicMock(returncode=0, stderr="")
+            self.esc.fire_desktop_notification("bob", 'has "quoted" text')
+            args = run.call_args[0][0]
+            # Embedded double quote must be backslash-escaped for AppleScript
+            self.assertIn('\\"quoted\\"', args[2])
+
+
 if __name__ == "__main__":
     unittest.main()

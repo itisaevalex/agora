@@ -3,9 +3,14 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 from typing import Optional
 
 from . import bus, threads
+
+
+def _is_macos() -> bool:
+    return sys.platform == "darwin"
 
 
 def write(self_label: str, ref: str, reason: str, thread_id: Optional[str] = None) -> str:
@@ -43,15 +48,57 @@ def write(self_label: str, ref: str, reason: str, thread_id: Optional[str] = Non
 
 
 def fire_desktop_notification(self_label: str, reason: str) -> bool:
-    """Best-effort `notify-send`. Returns True only if notify-send exited 0.
+    """Best-effort desktop notification. Returns True only if it exited 0.
 
-    Uses urgency=critical so the notification persists until manually dismissed
-    (urgency=normal auto-dismisses in ~5s and was easy to miss).
+    On macOS: uses `osascript` to fire a native Notification Center alert.
+    On Linux: uses `notify-send` with urgency=critical so the notification
+    persists until manually dismissed.
 
     Emits a terminal bell (BEL char to /dev/tty) as a fallback signal if a
     controlling tty is available — useful when the operator is looking at the
     aoe TUI rather than the desktop notification corner.
     """
+    if _is_macos():
+        return _fire_macos(self_label, reason)
+    return _fire_linux(self_label, reason)
+
+
+def _fire_macos(self_label: str, reason: str) -> bool:
+    bin_ = shutil.which("osascript")
+    if not bin_:
+        bus.audit("notify.skipped", reason="osascript not on PATH")
+        _terminal_bell()
+        return False
+
+    # AppleScript quoting: escape backslashes and double quotes
+    safe_title = f"agora: {self_label} escalating".replace("\\", "\\\\").replace('"', '\\"')
+    safe_body = reason[:300].replace("\\", "\\\\").replace('"', '\\"')
+    script = f'display notification "{safe_body}" with title "{safe_title}" sound name "Submarine"'
+
+    try:
+        proc = subprocess.run(
+            [bin_, "-e", script],
+            timeout=3, check=False,
+            capture_output=True, text=True,
+        )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        bus.audit("notify.failed", error=str(e))
+        _terminal_bell()
+        return False
+
+    if proc.returncode != 0:
+        bus.audit("notify.failed",
+                  exit_code=proc.returncode,
+                  stderr=(proc.stderr or "").strip()[:200])
+        _terminal_bell()
+        return False
+
+    bus.audit("notify.sent", label=self_label, backend="osascript")
+    _terminal_bell()
+    return True
+
+
+def _fire_linux(self_label: str, reason: str) -> bool:
     bin_ = shutil.which("notify-send")
     if not bin_:
         bus.audit("notify.skipped", reason="notify-send not on PATH")
@@ -79,7 +126,7 @@ def fire_desktop_notification(self_label: str, reason: str) -> bool:
         _terminal_bell()
         return False
 
-    bus.audit("notify.sent", label=self_label)
+    bus.audit("notify.sent", label=self_label, backend="notify-send")
     _terminal_bell()
     return True
 

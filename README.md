@@ -139,6 +139,12 @@ The installer:
 
 After registering the hook, restart any aoe Claude session and `/agora-whoami` will work.
 
+### Platform support
+
+- **Linux** — full support. Desktop notifications via `notify-send` (urgency=critical).
+- **macOS** — full support. Desktop notifications via `osascript` (Notification Center).
+- **WSL / anything else** — peer-msg + thread + escalation work everywhere; desktop notifications gracefully no-op with a terminal-bell fallback.
+
 ## Slash commands
 
 | Command | Purpose |
