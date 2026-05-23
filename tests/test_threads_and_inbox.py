@@ -240,3 +240,84 @@ class TestPaneAttachedDetection(unittest.TestCase):
             self.bus.aoe_send_peer_msg("target-id", "alice", "t_xyz", "the full msg")
         sent_text = run.call_args[0][0][-1]
         self.assertEqual(sent_text, "the full msg")
+
+
+class TestUndeliveredPiggyback(unittest.TestCase):
+    def setUp(self):
+        import os, tempfile, sys
+        from pathlib import Path
+        self.tmp = tempfile.mkdtemp()
+        os.environ["AGORA_ROOT"] = self.tmp
+        for mod in list(sys.modules):
+            if mod.startswith("lib"):
+                del sys.modules[mod]
+        from lib import bus
+        self.bus = bus
+        self.bus.BUS_ROOT = Path(self.tmp)
+        self.bus.ensure_bus_root()
+
+    def tearDown(self):
+        import os, shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        os.environ.pop("AGORA_ROOT", None)
+
+    def test_no_undelivered_returns_empty_piggyback(self):
+        self.assertEqual(self.bus.piggyback_undelivered_notice("any-id"), "")
+
+    def test_record_then_piggyback_contains_count_and_sender(self):
+        self.bus.record_undelivered("target", "alice", "t_xyz", 1234)
+        self.bus.record_undelivered("target", "alice", "t_xyz", 2345)
+        notice = self.bus.piggyback_undelivered_notice("target")
+        self.assertIn("2 earlier msg", notice)
+        self.assertIn("alice", notice)
+        self.assertIn("inbox.md", notice)
+
+    def test_clear_undelivered_archives(self):
+        self.bus.record_undelivered("target", "alice", "t_xyz", 100)
+        self.bus.clear_undelivered("target")
+        # Queue is gone
+        self.assertEqual(self.bus.read_undelivered("target"), [])
+        # But archive exists
+        from pathlib import Path
+        archive = Path(self.tmp) / "sessions" / "target" / "undelivered-archive.jsonl"
+        self.assertTrue(archive.exists())
+        self.assertIn("alice", archive.read_text())
+
+    def test_successful_send_clears_queue(self):
+        from unittest.mock import patch, MagicMock
+        # Pre-populate undelivered
+        self.bus.record_undelivered("target-id", "alice", "t_xyz", 100)
+        self.assertEqual(len(self.bus.read_undelivered("target-id")), 1)
+        # Now do a successful send
+        with patch.object(self.bus, "pane_is_attached", return_value=False), \
+             patch("subprocess.run",
+                   return_value=MagicMock(returncode=0, stdout="", stderr="")):
+            ok, _ = self.bus.aoe_send_peer_msg("target-id", "bob", "t_new", "small msg")
+        self.assertTrue(ok)
+        # Queue drained
+        self.assertEqual(self.bus.read_undelivered("target-id"), [])
+
+    def test_failed_send_records_undelivered(self):
+        from unittest.mock import patch, MagicMock
+        with patch.object(self.bus, "pane_is_attached", return_value=False), \
+             patch("subprocess.run",
+                   return_value=MagicMock(returncode=1, stderr="not in a mode",
+                                          stdout="")), \
+             patch("time.sleep"):  # short-circuit the retry backoff
+            ok, _ = self.bus.aoe_send_peer_msg("target-id", "alice", "t_xyz", "msg")
+        self.assertFalse(ok)
+        self.assertEqual(len(self.bus.read_undelivered("target-id")), 1)
+
+    def test_aoe_send_retries_once_on_failure(self):
+        from unittest.mock import patch, MagicMock
+        attempts = []
+        def fake_run(*args, **kwargs):
+            attempts.append(args)
+            if len(attempts) == 1:
+                return MagicMock(returncode=1, stderr="not in a mode", stdout="")
+            return MagicMock(returncode=0, stderr="", stdout="")
+        with patch("subprocess.run", side_effect=fake_run), \
+             patch("time.sleep"):
+            ok, _ = self.bus.aoe_send("target-id", "hello")
+        self.assertTrue(ok)
+        self.assertEqual(len(attempts), 2)

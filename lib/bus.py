@@ -175,26 +175,47 @@ def resume_bus() -> None:
 
 # ---------- aoe send (the actual cross-pane primitive) ----------
 
-def aoe_send(target_aoe_id: str, text: str, dry_run: bool = False) -> tuple[bool, str]:
-    """Pipe text into another aoe session's pane. Returns (ok, output_or_error)."""
+def aoe_send(target_aoe_id: str, text: str, dry_run: bool = False,
+             retry_on_failure: bool = True) -> tuple[bool, str]:
+    """Pipe text into another aoe session's pane. Returns (ok, output_or_error).
+
+    When retry_on_failure (default True), automatically retries once after a
+    2s backoff on tmux failures. This handles transient paste-buffer races
+    where the target pane briefly transitions through a non-input state.
+    """
     if dry_run:
         return True, f"[DRY] would send to {target_aoe_id}:\n{text}"
     if not bus_enabled():
         return False, "bus is paused (AGORA=off or ~/.agora/.paused exists)"
-    try:
-        proc = subprocess.run(
-            ["aoe", "send", target_aoe_id, text],
-            capture_output=True, text=True, timeout=10,
-        )
-        if proc.returncode != 0:
-            return False, proc.stderr.strip() or proc.stdout.strip() or f"exit {proc.returncode}"
-        return True, proc.stdout.strip()
-    except FileNotFoundError:
-        return False, "aoe binary not found on PATH"
-    except subprocess.TimeoutExpired:
-        return False, "aoe send timed out after 10s"
-    except Exception as e:
-        return False, f"aoe send failed: {e}"
+
+    def _try_once() -> tuple[bool, str]:
+        try:
+            proc = subprocess.run(
+                ["aoe", "send", target_aoe_id, text],
+                capture_output=True, text=True, timeout=10,
+            )
+            if proc.returncode != 0:
+                return False, proc.stderr.strip() or proc.stdout.strip() or f"exit {proc.returncode}"
+            return True, proc.stdout.strip()
+        except FileNotFoundError:
+            return False, "aoe binary not found on PATH"
+        except subprocess.TimeoutExpired:
+            return False, "aoe send timed out after 10s"
+        except Exception as e:
+            return False, f"aoe send failed: {e}"
+
+    ok, output = _try_once()
+    if ok or not retry_on_failure:
+        return ok, output
+
+    # One retry after a 2s backoff handles transient paste-buffer races
+    audit("aoe_send.retry", target=target_aoe_id, first_error=output[:120])
+    time.sleep(2)
+    ok2, output2 = _try_once()
+    if ok2:
+        audit("aoe_send.retry.recovered", target=target_aoe_id)
+        return True, output2
+    return False, output2
 
 
 # Empirical tmux send-keys limit on Linux: ~3 KB delivers reliably, ~4 KB is the
@@ -315,33 +336,114 @@ def aoe_send_peer_msg(target_aoe_id: str, sender_label: str, thread: str,
         return True, f"[DRY] FULL — unattached pane, full peer-msg into pane"
 
     # SILENT path: only when user is actively drafting in the receiving pane.
-    # If attached but idle (just watching), fall through to FULL so agent-to-
-    # agent autonomy still works.
     if drafting:
         audit("peer_msg.silent",
               target=target_aoe_id, reason="user drafting",
               body_bytes=len(wire_text))
         return True, "silent (user drafting, body in inbox.md for hook delivery)"
 
+    # Build outgoing text. If there are undelivered prior msgs for this target,
+    # piggyback a small PS so the receiver discovers the backlog without us
+    # needing to send a separate notification.
+    piggyback = piggyback_undelivered_notice(target_aoe_id)
+
     # NUDGE path: tiny notice telling the agent to READ inbox.md themselves.
-    # Previously this relied on the UserPromptSubmit hook to auto-inject, but
-    # Claude Code strips env when forking hooks (AOE_INSTANCE_ID + TMUX both
-    # gone), so the hook silently exits and the body never lands. Telling the
-    # agent to use Read tool on the inbox path bypasses the hook entirely.
     if len(wire_text) >= TMUX_SAFE_SIZE_BYTES:
-        inbox_path = BUS_ROOT / "sessions" / target_aoe_id / "inbox.md"
-        nudge = (
+        ibox = BUS_ROOT / "sessions" / target_aoe_id / "inbox.md"
+        outgoing = (
             f"📨 agora peer-msg from {sender_label} on thread {thread} "
             f"({len(wire_text)} bytes too big for tmux send-keys). "
-            f"Use the Read tool on {inbox_path} to see this and any other "
+            f"Use the Read tool on {ibox} to see this and any other "
             f"queued peer-msgs in full. After reading, /agora-reply {thread} "
             f"<your response> as usual, then truncate inbox.md so you don't "
-            f"double-process: > {inbox_path}"
-        )
+            f"double-process: > {ibox}"
+        ) + piggyback
         audit("peer_msg.nudge",
               target=target_aoe_id, reason="large body",
-              body_bytes=len(wire_text), inbox_path=str(inbox_path))
-        return aoe_send(target_aoe_id, nudge)
+              body_bytes=len(wire_text), inbox_path=str(ibox))
+    else:
+        # FULL path: agent will see it as a pasted prompt and respond
+        outgoing = wire_text + piggyback
 
-    # FULL path: agent will see it as a pasted prompt and respond
-    return aoe_send(target_aoe_id, wire_text)
+    ok, output = aoe_send(target_aoe_id, outgoing)
+    if ok:
+        # Successful delivery — drain the undelivered queue if any
+        clear_undelivered(target_aoe_id)
+    else:
+        # Final failure (after retry) — record so the next outgoing send
+        # piggybacks a recovery notice
+        record_undelivered(target_aoe_id, sender_label, thread, len(wire_text))
+        audit("peer_msg.send_failed_queued",
+              target=target_aoe_id, sender=sender_label, thread=thread,
+              error=output[:120])
+    return ok, output
+
+
+# ─── undelivered-queue piggyback ────────────────────────────────────────────
+#
+# When a real tmux delivery fails after retry, we persist a small record to
+# ~/.agora/sessions/<target>/undelivered.jsonl. The body is already in inbox.md;
+# this file just notes that a delivery FAILED so subsequent successful sends
+# can prepend a tiny "PS: N earlier msgs queued" tag — receiver discovers the
+# backlog without us spamming a separate notification.
+
+def undelivered_path(target_aoe_id: str):
+    return session_dir(target_aoe_id) / "undelivered.jsonl"
+
+
+def record_undelivered(target_aoe_id: str, sender_label: str, thread: str,
+                       body_bytes: int) -> None:
+    """Append a record that delivery to target failed for this msg."""
+    entry = {
+        "at": now_iso(),
+        "sender": sender_label,
+        "thread": thread,
+        "body_bytes": body_bytes,
+    }
+    with undelivered_path(target_aoe_id).open("a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+
+def read_undelivered(target_aoe_id: str) -> list[dict]:
+    p = undelivered_path(target_aoe_id)
+    if not p.exists():
+        return []
+    out = []
+    for line in p.read_text().splitlines():
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return out
+
+
+def clear_undelivered(target_aoe_id: str) -> None:
+    p = undelivered_path(target_aoe_id)
+    if p.exists():
+        # Archive instead of nuking — useful for forensics
+        archive = session_dir(target_aoe_id) / "undelivered-archive.jsonl"
+        with archive.open("a") as a, p.open() as src:
+            a.write(src.read())
+        p.unlink()
+
+
+def piggyback_undelivered_notice(target_aoe_id: str) -> str:
+    """Return a small text suffix listing prior failed deliveries, or empty.
+
+    Called by aoe_send_peer_msg before sending real traffic — the notice gets
+    prepended to the new message. After successful delivery, the queue is
+    cleared (drained by piggyback).
+    """
+    pending = read_undelivered(target_aoe_id)
+    if not pending:
+        return ""
+    n = len(pending)
+    last = pending[-1]
+    inbox = inbox_path(target_aoe_id)
+    return (
+        f"\n\n"
+        f"⚠ PS from agora: {n} earlier msg(s) failed to deliver to your pane "
+        f"due to a tmux transient. Bodies are queued at {inbox} — last from "
+        f"{last['sender']} at {last['at']}. Read the inbox to catch up, then "
+        f"truncate ('> {inbox}') to ack.\n"
+    )
