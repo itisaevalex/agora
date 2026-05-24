@@ -206,5 +206,115 @@ class TestSpawn(unittest.TestCase):
         self.assertIn("parse aoe-id", msg)
 
 
+class TestSpawnTaskDelivery(unittest.TestCase):
+    """Regression: initial task must land in child's inbox.md durably,
+    even when tmux delivery silently truncates large bodies."""
+
+    def setUp(self):
+        import tempfile, os, sys
+        from pathlib import Path
+        self.tmp = tempfile.mkdtemp()
+        os.environ["AGORA_ROOT"] = self.tmp
+        for mod in list(sys.modules):
+            if mod.startswith("lib"):
+                del sys.modules[mod]
+        from lib import bus, lineage, spawn, inbox
+        self.bus = bus
+        self.lineage = lineage
+        self.spawn = spawn
+        self.inbox = inbox
+        self.bus.BUS_ROOT = Path(self.tmp)
+        self.bus.ensure_bus_root()
+        self.parent = self.bus.SessionIdentity(aoe_id="parent-id", label="Parent")
+
+    def tearDown(self):
+        import os, shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        os.environ.pop("AGORA_ROOT", None)
+
+    def _spawn_with(self, task: str):
+        """Helper: run spawn() with all external IO mocked to return success."""
+        fake_add = MagicMock(returncode=0, stdout="  ID:      cafebabe1234\n", stderr="")
+        with patch("subprocess.run", return_value=fake_add), \
+             patch("time.sleep"), \
+             patch.object(self.bus, "aoe_send_peer_msg", return_value=(True, "delivered")) as mock_send:
+            ok, msg, cid = self.spawn.spawn(self.parent, "child1", task)
+        return ok, cid, mock_send
+
+    def test_full_task_written_to_inbox(self):
+        large_task = "ROLE: builder\n" + ("X" * 5000)
+        ok, cid, _ = self._spawn_with(large_task)
+        self.assertTrue(ok)
+        self.assertEqual(cid, "cafebabe1234")
+        # Inbox holds the FULL body, not just a preview
+        inbox_text = self.inbox.peek(cid)
+        self.assertIn("ROLE: builder", inbox_text)
+        # 5000-byte tail must be present
+        self.assertIn("X" * 100, inbox_text)
+        self.assertGreater(len(inbox_text), 5000)
+
+    def test_full_task_written_to_lineage_task_md(self):
+        large_task = "FULL TASK BRIEF\n" + ("Y" * 8000)
+        ok, cid, _ = self._spawn_with(large_task)
+        self.assertTrue(ok)
+        # Durable copy on disk for recovery
+        full = self.lineage.read_task(cid)
+        self.assertIsNotNone(full)
+        self.assertEqual(full, large_task)
+        # lineage.json still has just the 200-char preview (index stays small)
+        data = self.lineage.load()
+        self.assertEqual(len(data[cid]["task"]), 200)
+
+    def test_delivery_routes_through_peer_msg(self):
+        """spawn must NOT call `aoe send <id> <huge-body>` directly anymore."""
+        task = "any task"
+        ok, cid, mock_send = self._spawn_with(task)
+        self.assertTrue(ok)
+        # aoe_send_peer_msg must be called exactly once with the child id
+        mock_send.assert_called_once()
+        args, _ = mock_send.call_args
+        self.assertEqual(args[0], cid)
+        self.assertEqual(args[1], self.parent.label)
+        # Wire text contains the task body
+        self.assertIn("any task", args[3])
+
+    def test_inbox_persists_even_when_tmux_send_fails(self):
+        """If aoe_send_peer_msg fails (tmux gone), inbox.md still holds
+        the body so the child can recover on next prompt-submit."""
+        task = "important brief"
+        fake_add = MagicMock(returncode=0, stdout="  ID:      deadbeef5678\n", stderr="")
+        with patch("subprocess.run", return_value=fake_add), \
+             patch("time.sleep"), \
+             patch.object(self.bus, "aoe_send_peer_msg",
+                          return_value=(False, "tmux not running")):
+            ok, msg, cid = self.spawn.spawn(self.parent, "child2", task)
+        # spawn still returns ok=True because the body is recoverable
+        self.assertTrue(ok)
+        self.assertIn("tmux nudge failed", msg)
+        # Inbox + lineage task.md still populated
+        self.assertIn("important brief", self.inbox.peek(cid))
+        self.assertEqual(self.lineage.read_task(cid), task)
+
+    def test_no_raw_aoe_send_subprocess_call(self):
+        """spawn must not shell out to `aoe send` directly — that path was
+        the original bug where tmux silently dropped large bodies."""
+        fake_add = MagicMock(returncode=0, stdout="  ID:      abcdef987654\n", stderr="")
+        captured = []
+        def track(cmd, *a, **kw):
+            captured.append(cmd)
+            return fake_add
+        with patch("subprocess.run", side_effect=track), \
+             patch("time.sleep"), \
+             patch.object(self.bus, "aoe_send_peer_msg", return_value=(True, "ok")):
+            self.spawn.spawn(self.parent, "child3", "task")
+        # Only `aoe add` should have been invoked. No `aoe send`.
+        aoe_send_calls = [c for c in captured
+                          if isinstance(c, list) and len(c) >= 2
+                          and c[0] == "aoe" and c[1] == "send"]
+        self.assertEqual(aoe_send_calls, [],
+                         f"spawn called raw `aoe send` ({len(aoe_send_calls)} times) — "
+                         f"this is the original bug. Route through aoe_send_peer_msg.")
+
+
 if __name__ == "__main__":
     unittest.main()

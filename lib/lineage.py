@@ -41,9 +41,30 @@ def save(lineage: dict) -> None:
     _path().write_text(json.dumps(lineage, indent=2) + "\n")
 
 
+def task_path(aoe_id: str):
+    """Where the FULL initial task body for a spawned session lives."""
+    return bus.BUS_ROOT / "lineage" / aoe_id / "task.md"
+
+
+def read_task(aoe_id: str) -> Optional[str]:
+    """Read the full initial task for a spawned session, or None if not stored."""
+    p = task_path(aoe_id)
+    if not p.exists():
+        return None
+    try:
+        return p.read_text()
+    except OSError:
+        return None
+
+
 def register(aoe_id: str, title: str, parent_id: Optional[str] = None,
              task: str = "") -> None:
-    """Record that aoe_id was spawned (optionally by parent_id)."""
+    """Record that aoe_id was spawned (optionally by parent_id).
+
+    Stores a 200-char preview in lineage.json (for `agora tree` rendering) AND
+    writes the full task body to ~/.agora/lineage/<aoe_id>/task.md so it stays
+    recoverable if delivery to the child's inbox fails.
+    """
     bus.ensure_bus_root()
     data = load()
     data[aoe_id] = {
@@ -53,8 +74,16 @@ def register(aoe_id: str, title: str, parent_id: Optional[str] = None,
         "task": task[:200],
     }
     save(data)
+
+    # Durable full-body copy. Survives tmux truncation, child crashes, etc.
+    if task:
+        tp = task_path(aoe_id)
+        tp.parent.mkdir(parents=True, exist_ok=True)
+        tp.write_text(task)
+
     bus.audit("spawn.registered", aoe_id=aoe_id, title=title,
-              parent=parent_id, task_preview=task[:80])
+              parent=parent_id, task_bytes=len(task),
+              task_preview=task[:80])
 
 
 def ancestors(aoe_id: str) -> list[str]:
