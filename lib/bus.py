@@ -244,6 +244,53 @@ def _find_tmux_session_for(aoe_id: str) -> Optional[str]:
         return None
 
 
+def wait_for_pane_ready(aoe_id: str, timeout: float = 15.0,
+                        poll_interval: float = 0.5) -> bool:
+    """Block until the target pane is rendering a claude prompt, or timeout.
+
+    Used by spawn delivery to avoid the cold-start race where `tmux send-keys`
+    runs before claude's TUI is actually accepting input. Symptom pre-fix:
+    spawn.ok logged, FULL path taken, but the child pane stays empty because
+    keystrokes hit a not-yet-rendered prompt and got dropped.
+
+    "Ready" means we can see a `❯` prompt line in the recent pane content —
+    that's the input row; if it's rendered, keystrokes will land. Cold-start
+    splash (Claude Code v..., trust folder dialog) takes ~3-8s typically;
+    we cap at 15s and return False so the caller can fall through and let
+    the inbox.md + lazarus-nudge path cover the late-arriving pane.
+
+    Returns True if pane became ready before timeout, False on timeout.
+    """
+    import re
+    deadline = time.monotonic() + timeout
+    tmux_session = None
+    while time.monotonic() < deadline:
+        # tmux session may not exist for the first ~0.5s after aoe add
+        if tmux_session is None:
+            tmux_session = _find_tmux_session_for(aoe_id)
+        if tmux_session is not None:
+            try:
+                proc = subprocess.run(
+                    ["tmux", "capture-pane", "-p", "-t", tmux_session, "-S", "-10"],
+                    capture_output=True, text=True, timeout=3,
+                )
+                if proc.returncode == 0:
+                    clean = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", proc.stdout)
+                    for line in clean.splitlines():
+                        if line.strip().startswith("❯"):
+                            return True
+                else:
+                    # Session disappeared (aoe crashed mid-spawn, or tmux
+                    # killed it). Drop the cached name so we re-probe on
+                    # the next iteration; if the session comes back up
+                    # under a new name we'll find it.
+                    tmux_session = None
+            except (subprocess.TimeoutExpired, OSError, FileNotFoundError):
+                tmux_session = None
+        time.sleep(poll_interval)
+    return False
+
+
 def pane_is_attached(aoe_id: str) -> bool:
     """Return True if a tmux client is currently attached to the target pane.
 
@@ -296,7 +343,26 @@ def input_is_empty(aoe_id: str) -> bool:
                 rest = stripped.lstrip("❯").strip()
                 # An empty input shows just `❯ ` (optionally with a cursor block)
                 # Common cursor glyphs in claude's TUI
-                return rest in ("", "█", "▓", "▁", "_")
+                if rest in ("", "█", "▓", "▁", "_"):
+                    return True
+                # Claude Code 2.x renders a dim-italic placeholder inside the
+                # input row on a fresh / cleared session, e.g.
+                #   ❯ Try "how do I log an error?"
+                # After ANSI strip it's indistinguishable from a real draft,
+                # which used to mis-fire SILENT and stall spawn delivery.
+                # The length bound (`< 50`) catches all observed Claude
+                # Code 2.1.x placeholders (max ~38 chars in practice) while
+                # rejecting plausible human drafts. Imperfect — a short
+                # draft like `Try "rerun pytest"` would still match — but
+                # the bias is intentional: false-empty stuffs a peer-msg
+                # mid-draft; false-drafting only delays delivery until
+                # next prompt. Spawn delivery sidesteps this entirely via
+                # force_send=True, so the residual risk only applies to
+                # peer-msg into a fresh-but-attached non-child pane (rare).
+                if (rest.startswith('Try "') and rest.endswith('"')
+                        and len(rest) < 50):
+                    return True
+                return False
         # No ❯ line found in the last 5 lines — could mean claude is
         # mid-thinking (no input rendered). Treat as idle.
         return True
@@ -305,7 +371,8 @@ def input_is_empty(aoe_id: str) -> bool:
 
 
 def aoe_send_peer_msg(target_aoe_id: str, sender_label: str, thread: str,
-                      wire_text: str, dry_run: bool = False) -> tuple[bool, str]:
+                      wire_text: str, dry_run: bool = False,
+                      force_send: bool = False) -> tuple[bool, str]:
     """Deliver a peer-msg via the right path for the receiver's state.
 
     Three delivery modes:
@@ -322,9 +389,18 @@ def aoe_send_peer_msg(target_aoe_id: str, sender_label: str, thread: str,
     3. FULL (small body, target unattached): dump the full peer-msg into the
        target pane immediately. Agent responds autonomously without needing
        a human to trigger the hook.
+
+    `force_send=True` bypasses the SILENT branch. Used by spawn delivery,
+    where the receiving pane was just created and no human can possibly be
+    drafting in it — the input_is_empty() heuristic gives false positives
+    on Claude Code's fresh-pane placeholder text.
     """
     attached = pane_is_attached(target_aoe_id)
-    drafting = attached and not input_is_empty(target_aoe_id)
+    drafting = (
+        (not force_send)
+        and attached
+        and not input_is_empty(target_aoe_id)
+    )
 
     if dry_run:
         if drafting:

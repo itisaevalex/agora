@@ -155,7 +155,7 @@ class TestSpawn(unittest.TestCase):
         fake_out = "✓ Added session: child1\n  ID:      abcdef123456\n"
         fake_run = MagicMock(returncode=0, stdout=fake_out, stderr="")
         with patch("subprocess.run", return_value=fake_run), \
-             patch("time.sleep"):
+             patch.object(self.bus, "wait_for_pane_ready", return_value=True):
             ok, msg, cid = self.spawn.spawn(self.parent, "child1", "go forth")
         self.assertTrue(ok)
         self.assertEqual(cid, "abcdef123456")
@@ -175,7 +175,7 @@ class TestSpawn(unittest.TestCase):
 
         fake_out = "  ID:      abc123def456\n"
         with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout=fake_out, stderr="")), \
-             patch("time.sleep"):
+             patch.object(self.bus, "wait_for_pane_ready", return_value=True):
             ok, _, cid = self.spawn.spawn(self.parent, "GrandChild", "task")
         self.assertTrue(ok)
         # GP should now have a link to GrandChild
@@ -236,7 +236,7 @@ class TestSpawnTaskDelivery(unittest.TestCase):
         """Helper: run spawn() with all external IO mocked to return success."""
         fake_add = MagicMock(returncode=0, stdout="  ID:      cafebabe1234\n", stderr="")
         with patch("subprocess.run", return_value=fake_add), \
-             patch("time.sleep"), \
+             patch.object(self.bus, "wait_for_pane_ready", return_value=True), \
              patch.object(self.bus, "aoe_send_peer_msg", return_value=(True, "delivered")) as mock_send:
             ok, msg, cid = self.spawn.spawn(self.parent, "child1", task)
         return ok, cid, mock_send
@@ -284,7 +284,7 @@ class TestSpawnTaskDelivery(unittest.TestCase):
         task = "important brief"
         fake_add = MagicMock(returncode=0, stdout="  ID:      deadbeef5678\n", stderr="")
         with patch("subprocess.run", return_value=fake_add), \
-             patch("time.sleep"), \
+             patch.object(self.bus, "wait_for_pane_ready", return_value=True), \
              patch.object(self.bus, "aoe_send_peer_msg",
                           return_value=(False, "tmux not running")):
             ok, msg, cid = self.spawn.spawn(self.parent, "child2", task)
@@ -304,7 +304,7 @@ class TestSpawnTaskDelivery(unittest.TestCase):
             captured.append(cmd)
             return fake_add
         with patch("subprocess.run", side_effect=track), \
-             patch("time.sleep"), \
+             patch.object(self.bus, "wait_for_pane_ready", return_value=True), \
              patch.object(self.bus, "aoe_send_peer_msg", return_value=(True, "ok")):
             self.spawn.spawn(self.parent, "child3", "task")
         # Only `aoe add` should have been invoked. No `aoe send`.
@@ -314,6 +314,27 @@ class TestSpawnTaskDelivery(unittest.TestCase):
         self.assertEqual(aoe_send_calls, [],
                          f"spawn called raw `aoe send` ({len(aoe_send_calls)} times) — "
                          f"this is the original bug. Route through aoe_send_peer_msg.")
+
+    def test_spawn_skips_send_when_pane_never_ready(self):
+        """If wait_for_pane_ready times out, the V2 bug returns: typing
+        keystrokes into a not-yet-rendered prompt drops them silently.
+        spawn must skip the tmux send and rely on inbox.md + lazarus.
+        Caught in adversarial review 2026-05-29."""
+        fake_add = MagicMock(returncode=0, stdout="  ID:      facefeed1234\n", stderr="")
+        with patch("subprocess.run", return_value=fake_add), \
+             patch.object(self.bus, "wait_for_pane_ready", return_value=False), \
+             patch.object(self.bus, "aoe_send_peer_msg") as mock_send:
+            ok, msg, cid = self.spawn.spawn(self.parent, "child-not-ready",
+                                            "important task body")
+        self.assertTrue(ok)  # still ok — body is in inbox.md
+        self.assertEqual(cid, "facefeed1234")
+        # CRITICAL: no tmux send was attempted
+        mock_send.assert_not_called()
+        # User-facing message must communicate pane-not-ready
+        self.assertIn("inbox.md", msg)
+        # And inbox + lineage are still durable
+        self.assertIn("important task body", self.inbox.peek(cid))
+        self.assertEqual(self.lineage.read_task(cid), "important task body")
 
 
 if __name__ == "__main__":
