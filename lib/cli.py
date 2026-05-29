@@ -25,7 +25,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from lib import bus, escalate, inbox, lineage, links, peer_msg, safety, spawn, status, threads  # noqa: E402
+from lib import bus, escalate, graveyard, inbox, lineage, links, necromance, peer_msg, safety, spawn, status, threads  # noqa: E402
 
 
 
@@ -384,6 +384,122 @@ def cmd_status(args: argparse.Namespace) -> int:
         return 0
 
 
+def cmd_grave_dig(args: argparse.Namespace) -> int:
+    """Search the graveyard for sessions matching a content query.
+
+    Prints ranked candidates with their label, recency, size, hit tokens, and
+    a one-line hook so the caller can decide which one to consult.
+    """
+    query = " ".join(args.query).strip()
+    if not query:
+        print("usage: grave-dig <query>", file=sys.stderr)
+        return 2
+
+    results = necromance.graveyard.grave_dig(query, limit=args.limit)
+    if not results:
+        print(f"no dead sessions matching {query!r}")
+        return 0
+
+    print(f"{len(results)} candidate(s) for {query!r}:")
+    print()
+    for i, r in enumerate(results, 1):
+        e = r.entry
+        ago = _ago(e.mtime)
+        hook = e.last_user or e.first_user or "(no user text)"
+        if len(hook) > 90:
+            hook = hook[:87] + "…"
+        print(f"  {i}. {e.label}  ({e.uuid[:8]}…)")
+        print(f"     score={r.score}  hits={','.join(r.hits)}  mtime={ago}  "
+              f"size={e.size_mb}M  turns={e.turns}")
+        print(f"     ↳ {hook}")
+        print()
+    print(f"  → agora necromance {results[0].entry.label} \"<your question>\"")
+    return 0
+
+
+def cmd_graveyard(args: argparse.Namespace) -> int:
+    """List every known dead session — full index dump or live necromancies."""
+    if args.live:
+        live = necromance.list_live()
+        if not live:
+            print("no live necromancies")
+            return 0
+        now = time.time()
+        print(f"{len(live)} live necromancy(ies):")
+        for n in live:
+            idle = int(now - n.last_active)
+            print(f"  · {n.label}  ({n.uuid[:8]}…)  AoE={n.title}  "
+                  f"idle={idle}s  thread={n.thread_id}")
+        return 0
+
+    entries = necromance.graveyard.build_index()
+    if not entries:
+        print("graveyard is empty (no claude session jsonls found)")
+        return 0
+
+    entries.sort(key=lambda e: -e.mtime)
+    limit = args.limit if args.limit > 0 else len(entries)
+    print(f"{len(entries)} dead session(s) in graveyard "
+          f"(showing {min(limit, len(entries))}):")
+    print()
+    for e in entries[:limit]:
+        ago = _ago(e.mtime)
+        print(f"  {e.label}  ({e.uuid[:8]}…)  {ago}  {e.size_mb}M  turns={e.turns}")
+    return 0
+
+
+def cmd_necromance(args: argparse.Namespace) -> int:
+    me = _require_self()
+    target = args.target
+    question = _read_body(args, positional_attr="question")
+    if not question:
+        print("error: empty question", file=sys.stderr)
+        return 2
+
+    ok, msg, necro = necromance.necromance(
+        me, target, question,
+        model=args.model,
+        effort=args.effort,
+        summary_mode=args.summary,
+    )
+    icon = "🕯" if ok else "✗"
+    print(f"{icon} {msg}")
+    if ok and necro is not None:
+        print(f"  released after {necromance.DEFAULT_TTL_SECONDS // 60}m idle "
+              f"(or run `agora graveyard --live` to see / `agora release {necro.uuid[:8]}` "
+              f"to release early)")
+    return 0 if ok else 1
+
+
+def cmd_release(args: argparse.Namespace) -> int:
+    """Manually release a live necromancy (cull-now). Identifier = uuid prefix."""
+    pre = args.target.lower()
+    matched = [n for n in necromance.list_live() if n.uuid.startswith(pre)]
+    if not matched:
+        print(f"no live necromancy matching {args.target!r}", file=sys.stderr)
+        return 1
+    if len(matched) > 1:
+        print(f"ambiguous — {len(matched)} live necromancies start with {args.target!r}:",
+              file=sys.stderr)
+        for n in matched:
+            print(f"  · {n.label} ({n.uuid})", file=sys.stderr)
+        return 2
+    necro = matched[0]
+    ok = necromance.release(necro, reason="manual_release")
+    icon = "✓" if ok else "·"
+    print(f"{icon} released {necro.label} ({necro.uuid[:8]}…)")
+    return 0 if ok else 1
+
+
+def _ago(mtime: float) -> str:
+    delta = time.time() - mtime
+    if delta < 3600:
+        return f"{int(delta // 60)}m ago"
+    if delta < 86400:
+        return f"{int(delta // 3600)}h ago"
+    return f"{int(delta // 86400)}d ago"
+
+
 def cmd_pause(args: argparse.Namespace) -> int:
     bus.pause_bus()
     print("✓ bus paused — no outbound messages until /agora-resume")
@@ -456,6 +572,33 @@ def build_parser() -> argparse.ArgumentParser:
     p_status.add_argument("--compact", action="store_true",
                           help="one-line-per-session, no detail block")
     p_status.set_defaults(func=cmd_status)
+
+    p_dig = sub.add_parser("grave-dig", help="search the graveyard for dead sessions matching a query")
+    p_dig.add_argument("query", nargs="+", help="content to match against label, keywords, first/last user messages")
+    p_dig.add_argument("--limit", type=int, default=5, help="max candidates to show (default 5)")
+    p_dig.set_defaults(func=cmd_grave_dig)
+
+    p_yard = sub.add_parser("graveyard", help="list dead sessions or live necromancies")
+    p_yard.add_argument("--live", action="store_true", help="show only live necromancies")
+    p_yard.add_argument("--limit", type=int, default=20, help="cap output rows (default 20; 0 = all)")
+    p_yard.set_defaults(func=cmd_graveyard)
+
+    p_necro = sub.add_parser("necromance",
+                             help="raise a dead session for a one-shot consultation (5-min idle TTL)")
+    p_necro.add_argument("target", help="label or uuid (prefix ok) of the dead session")
+    p_necro.add_argument("question", nargs="*", help="question to ask (or use --body-stdin)")
+    p_necro.add_argument("--body-stdin", action="store_true", dest="body_stdin")
+    p_necro.add_argument("--model", default=necromance.DEFAULT_MODEL,
+                         help=f"claude model to resume with (default: {necromance.DEFAULT_MODEL})")
+    p_necro.add_argument("--effort", default=necromance.DEFAULT_EFFORT,
+                         help=f"effort level (default: {necromance.DEFAULT_EFFORT})")
+    p_necro.add_argument("--summary", action="store_true",
+                         help="resume from summary instead of full transcript (cheaper, lower fidelity)")
+    p_necro.set_defaults(func=cmd_necromance)
+
+    p_release = sub.add_parser("release", help="manually release a live necromancy (cull-now)")
+    p_release.add_argument("target", help="uuid prefix of the dead session being consulted")
+    p_release.set_defaults(func=cmd_release)
 
 
     return p
