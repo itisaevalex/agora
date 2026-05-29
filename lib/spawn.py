@@ -8,7 +8,6 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-import time
 from typing import Optional
 
 from . import bus, inbox, lineage, links, peer_msg as pm
@@ -104,19 +103,26 @@ def spawn(
         links.add(anc_id, child_id, title)
         links.add(child_id, anc_id, anc_label)
 
-    # 6. Wait briefly for the new claude pane to be ready, then deliver the
-    #    initial task through the SAME machinery /agora-ask uses:
+    # 6. Wait for the new claude pane to actually be rendering an input
+    #    prompt, then deliver the initial task through the SAME machinery
+    #    /agora-ask uses:
     #      - persist a PeerMsg to the child's inbox.md (durable; survives
     #        tmux send-keys truncation)
     #      - route via bus.aoe_send_peer_msg which picks NUDGE for large
     #        bodies, FULL for small bodies, SILENT for attached-and-drafting
     #
-    #    Bug history: this used to be a raw `aoe send <child_id> <task>` via
-    #    subprocess. tmux send-keys silently truncates / drops bodies past
-    #    ~3-4 KB while still returning exit 0, producing a false-positive
-    #    spawn.ok with an empty child pane. Routing through aoe_send_peer_msg
-    #    closes that gap.
-    time.sleep(2)
+    #    Bug history:
+    #      - V1 used `aoe send <child_id> <task>` raw via subprocess. tmux
+    #        send-keys silently truncates / drops bodies past ~3-4 KB while
+    #        still returning exit 0, producing a false-positive spawn.ok
+    #        with an empty child pane. Routing through aoe_send_peer_msg
+    #        closes that gap.
+    #      - V2 used `time.sleep(2)` as a cold-start wait, which was not
+    #        enough on a fresh claude session (splash + trust prompt + TUI
+    #        init takes 3-8s typically). FULL keystrokes hit a not-yet-
+    #        rendered prompt and got dropped. wait_for_pane_ready polls
+    #        until a `❯` prompt line is visible, with a 15s cap.
+    pane_ready = bus.wait_for_pane_ready(child_id, timeout=15.0)
     thread_id = f"t_spawn_{child_id[:8]}"
     msg = pm.PeerMsg(
         sender_label=parent.label,
@@ -127,7 +133,27 @@ def spawn(
     )
     inbox.append_to(child_id, msg)
 
-    ok, output = bus.aoe_send_peer_msg(child_id, parent.label, thread_id, msg.to_wire())
+    if not pane_ready:
+        # The pane never rendered a prompt within 15s — claude is still
+        # booting, crashed, or `aoe add` succeeded but the pty is wedged.
+        # DO NOT type into it; that's the V2 bug. inbox.md already holds
+        # the durable body. Lazarus's nudge daemon will deliver as soon
+        # as the pane comes back to life; if it never does, the body is
+        # still recoverable via /agora-inbox on next attach.
+        bus.audit("spawn.pane_not_ready", child_id=child_id, title=title,
+                  fallthrough="inbox.md only; tmux send skipped")
+        return True, (
+            f"spawned {title} as {child_id[:12]} · lineage OK, "
+            f"task in inbox.md, pane not ready (lazarus will deliver)"
+        ), child_id
+
+    # force_send=True: the child pane was just created 2 seconds ago, so no
+    # human can possibly be drafting in it. Bypasses the SILENT heuristic
+    # which mis-fires on Claude Code's fresh-pane placeholder text.
+    ok, output = bus.aoe_send_peer_msg(
+        child_id, parent.label, thread_id, msg.to_wire(),
+        force_send=True,
+    )
     if not ok:
         # The full body is in inbox.md and the durable lineage/<id>/task.md
         # copy is on disk — the failure is purely the nudge/full tmux send.

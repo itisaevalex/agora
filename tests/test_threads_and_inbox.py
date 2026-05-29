@@ -241,6 +241,170 @@ class TestPaneAttachedDetection(unittest.TestCase):
         sent_text = run.call_args[0][0][-1]
         self.assertEqual(sent_text, "the full msg")
 
+    # ----- regression: Claude Code placeholder broke spawn delivery -----
+    # Bug: fresh Claude Code panes render `❯ Try "how do I log an error?"` as
+    # placeholder text inside the input row. After ANSI strip it looked like
+    # a real draft to input_is_empty(), which flipped agora into SILENT and
+    # left freshly-spawned children sitting forever with their inbox
+    # untouched. See 2026-05-29 incident (slovenia → latency-outliers spawn).
+
+    def test_input_is_empty_recognises_claude_placeholder(self):
+        """A fresh Claude Code session shows `❯ Try "<question>"` in the
+        input row when nothing has been typed. That MUST be treated as
+        empty, otherwise spawn delivery never wakes the child."""
+        from unittest.mock import patch, MagicMock
+        captured = (
+            'Claude Code v2.1.156\n'
+            '\n'
+            '❯ Try "how do I log an error?"\n'
+            '─────────────────────────\n'
+        )
+        with patch.object(self.bus, "_find_tmux_session_for",
+                          return_value="aoe_fresh_abc12345"), \
+             patch("subprocess.run",
+                   return_value=MagicMock(returncode=0, stdout=captured, stderr="")):
+            self.assertTrue(self.bus.input_is_empty("abc12345deadbeef"))
+
+    def test_input_is_empty_returns_false_for_real_draft(self):
+        """A real human draft must NOT be treated as empty — we still want
+        SILENT delivery into a watched pane that someone's typing in."""
+        from unittest.mock import patch, MagicMock
+        captured = '❯ here is a half-written question I am still typing\n'
+        with patch.object(self.bus, "_find_tmux_session_for",
+                          return_value="aoe_drafting_abc12345"), \
+             patch("subprocess.run",
+                   return_value=MagicMock(returncode=0, stdout=captured, stderr="")):
+            self.assertFalse(self.bus.input_is_empty("abc12345deadbeef"))
+
+    def test_input_is_empty_rejects_long_try_quote_draft(self):
+        """The placeholder match is length-bounded so a human draft that
+        coincidentally starts with `Try "...` and ends with `"` is NOT
+        classified as empty. Otherwise we'd stuff a peer-msg into the
+        middle of someone's actual question. Caught in adversarial review
+        2026-05-29."""
+        from unittest.mock import patch, MagicMock
+        # A real draft that would match the prefix+suffix pattern
+        captured = '❯ Try "reproducing the crash on my machine using docker"\n'
+        with patch.object(self.bus, "_find_tmux_session_for",
+                          return_value="aoe_drafting_abc12345"), \
+             patch("subprocess.run",
+                   return_value=MagicMock(returncode=0, stdout=captured, stderr="")):
+            self.assertFalse(self.bus.input_is_empty("abc12345deadbeef"))
+
+    def test_force_send_bypasses_silent_branch(self):
+        """spawn delivery must NEVER pick SILENT even if the heuristic thinks
+        the user is drafting — the pane was just created 2s ago, no human
+        is in it. force_send=True is the contract."""
+        from unittest.mock import patch, MagicMock
+        with patch.object(self.bus, "pane_is_attached", return_value=True), \
+             patch.object(self.bus, "input_is_empty", return_value=False), \
+             patch("subprocess.run",
+                   return_value=MagicMock(returncode=0, stdout="", stderr="")) as run:
+            ok, msg = self.bus.aoe_send_peer_msg(
+                "target-id", "alice", "t_xyz", "the spawn task",
+                force_send=True,
+            )
+        self.assertTrue(ok)
+        self.assertNotIn("silent", msg.lower())
+        run.assert_called()  # real tmux send actually happened
+
+    def test_force_send_default_false_preserves_silent(self):
+        """Existing peer-to-peer callers must not regress — without
+        force_send, attached+drafting still picks SILENT as before."""
+        from unittest.mock import patch
+        with patch.object(self.bus, "pane_is_attached", return_value=True), \
+             patch.object(self.bus, "input_is_empty", return_value=False), \
+             patch("subprocess.run") as run:
+            ok, msg = self.bus.aoe_send_peer_msg(
+                "target-id", "alice", "t_xyz", "ordinary peer msg",
+            )
+        self.assertTrue(ok)
+        self.assertIn("silent", msg)
+        run.assert_not_called()
+
+    # ----- regression: cold-start claude dropped spawn keystrokes -----
+    # Bug: spawn.py used a bare `time.sleep(2)` before delivery. On cold-
+    # start claude that's not enough — splash + trust prompt + TUI init
+    # takes 3-8s typically. The FULL send fired into a not-yet-rendered
+    # prompt and keystrokes got dropped. Caught 2026-05-29 in the godot
+    # benchmark — spawn.ok logged, no SILENT mis-fire, but estragon's
+    # pane stayed empty. Manual `aoe send` ~2 min later worked instantly.
+
+    def test_wait_for_pane_ready_returns_true_on_first_poll(self):
+        """When the prompt is already rendering, return True immediately."""
+        from unittest.mock import patch, MagicMock
+        ready_capture = (
+            "Claude Code v2.1.156\n"
+            "──────────────────\n"
+            '❯ Try "write a test for db.py"\n'
+        )
+        with patch.object(self.bus, "_find_tmux_session_for",
+                          return_value="aoe_x_abc12345"), \
+             patch("subprocess.run",
+                   return_value=MagicMock(returncode=0, stdout=ready_capture, stderr="")), \
+             patch("time.sleep") as sleep_mock:
+            ready = self.bus.wait_for_pane_ready(
+                "abc12345deadbeef", timeout=15.0, poll_interval=0.5,
+            )
+        self.assertTrue(ready)
+        # Returned BEFORE the end-of-iteration time.sleep — sleep budget
+        # must be exactly 0, not just bounded.
+        self.assertEqual(sleep_mock.call_count, 0)
+
+    def test_wait_for_pane_ready_polls_until_prompt_appears(self):
+        """Cold-start path: first few captures show splash, then prompt."""
+        from unittest.mock import patch, MagicMock
+        splash = "Claude Code v2.1.156\nLoading…\n"
+        ready  = "Claude Code v2.1.156\n──────\n❯ Try \"...\"\n"
+        captures = [
+            MagicMock(returncode=0, stdout=splash, stderr=""),
+            MagicMock(returncode=0, stdout=splash, stderr=""),
+            MagicMock(returncode=0, stdout=ready,  stderr=""),
+        ]
+        with patch.object(self.bus, "_find_tmux_session_for",
+                          return_value="aoe_x_abc12345"), \
+             patch("subprocess.run", side_effect=captures), \
+             patch("time.sleep"):
+            ready_now = self.bus.wait_for_pane_ready(
+                "abc12345deadbeef", timeout=15.0, poll_interval=0.01,
+            )
+        self.assertTrue(ready_now)
+
+    def test_wait_for_pane_ready_times_out_and_returns_false(self):
+        """If the pane never renders a prompt, return False so the caller
+        can fall through to inbox.md + lazarus path."""
+        from unittest.mock import patch, MagicMock
+        # Splash forever, no ❯ line. With timeout=0.05 and poll_interval=0.02
+        # the loop fires a couple of times then bails.
+        splash = "Claude Code v2.1.156\nLoading…\n"
+        with patch.object(self.bus, "_find_tmux_session_for",
+                          return_value="aoe_x_abc12345"), \
+             patch("subprocess.run",
+                   return_value=MagicMock(returncode=0, stdout=splash, stderr="")), \
+             patch("time.sleep"):
+            ready = self.bus.wait_for_pane_ready(
+                "abc12345deadbeef", timeout=0.05, poll_interval=0.02,
+            )
+        self.assertFalse(ready)
+
+    def test_wait_for_pane_ready_handles_missing_tmux_session(self):
+        """The tmux session may not exist yet for the first ~0.5s after
+        `aoe add`. Loop must tolerate that and keep polling."""
+        from unittest.mock import patch, MagicMock
+        # First lookup returns None (session not registered yet), second
+        # returns the session name; pane capture then shows the prompt.
+        session_results = [None, "aoe_x_abc12345"]
+        with patch.object(self.bus, "_find_tmux_session_for",
+                          side_effect=session_results), \
+             patch("subprocess.run",
+                   return_value=MagicMock(returncode=0,
+                                          stdout='❯ Try "..."\n', stderr="")), \
+             patch("time.sleep"):
+            ready = self.bus.wait_for_pane_ready(
+                "abc12345deadbeef", timeout=15.0, poll_interval=0.01,
+            )
+        self.assertTrue(ready)
+
 
 class TestUndeliveredPiggyback(unittest.TestCase):
     def setUp(self):
