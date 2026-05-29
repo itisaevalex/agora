@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# agora-graveyard-cull — release every necromancy idle past its TTL.
+#
+# Designed for cron. Idempotent; safe to fire every minute. Each call:
+#   1. Reads ~/.agora/graveyard/live/*.lock
+#   2. Stops + removes any whose last_active is older than AGORA_NECRO_TTL_SECS
+#      (default 300 = 5 minutes), plus any "launching" locks orphaned by a
+#      crashed spawner (older than LAUNCH_TIMEOUT_SECONDS = 60).
+#   3. Audits each release into ~/.agora/audit.log.
+#
+# Recommended crontab entry:
+#   * * * * * "$HOME/.local/bin/agora-graveyard-cull" >> /tmp/agora-cull.log 2>&1
+#
+# Or run by hand at any time: this is a no-op when nothing has aged out.
+set -e
+
+# MED-5: derive AGORA_REPO from the script's own location so this works on
+# any machine without an env var, falling back to the env var if explicitly set.
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+REPO="${AGORA_REPO:-$(cd -- "$SCRIPT_DIR/.." >/dev/null 2>&1 && pwd)}"
+if [ ! -d "$REPO" ] || [ ! -d "$REPO/lib" ]; then
+    echo "agora-graveyard-cull: cannot locate agora repo (looked at $REPO)" >&2
+    exit 1
+fi
+
+# LOW-4: validate TTL as a plain integer BEFORE substituting into Python
+# source. Without this, `AGORA_NECRO_TTL_SECS='1; import os; os.system(...)'`
+# would inject code. Self-harm only since the env var is operator-controlled,
+# but cheap to defuse.
+TTL="${AGORA_NECRO_TTL_SECS:-300}"
+if ! [[ "$TTL" =~ ^[0-9]+$ ]]; then
+    echo "agora-graveyard-cull: AGORA_NECRO_TTL_SECS must be a positive integer, got: $TTL" >&2
+    exit 1
+fi
+
+cd "$REPO"
+# Pass TTL via env, not f-string substitution.
+AGORA_NECRO_TTL_SECS="$TTL" exec python3 -c "
+import os, sys
+sys.path.insert(0, '.')
+from lib import necromance
+ttl = int(os.environ.get('AGORA_NECRO_TTL_SECS', 300))
+released = necromance.cull(ttl_seconds=ttl)
+if released:
+    print('released:', ', '.join(u[:8] for u in released))
+"
